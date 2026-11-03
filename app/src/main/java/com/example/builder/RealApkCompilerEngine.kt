@@ -120,11 +120,11 @@ class RealApkCompilerEngine(private val context: Context) {
         2 to "2. إنشاء بيئة المشروع المعزولة (source / build / output)",
         3 to "3. معالجة أكواد HTML وCSS وJavaScript للمشروع",
         4 to "4. توليد أيقونة وهوية التطبيق المستقل الجديد",
-        5 to "5. تضمين القالب التنفيذي المستقل (Standalone Runtime DEX)",
-        6 to "6. توليد Binary AndroidManifest.xml خاص بالتطبيق الجديد",
-        7 to "7. تجميع حزمة APK المستقلة ومحاذاة الموارد (ZipAlign 4-Byte)",
-        8 to "8. التوقيع الرقمي بمفتاح المشروع (RSA-2048 Keystore)",
-        9 to "9. فحص هوية APK الحقيقية والتحقق من الانفصال التام عن الاستوديو"
+        5 to "5. تضمين القالب التنفيذي المستقل ومزامنة resources.arsc",
+        6 to "6. توليد Binary AndroidManifest.xml مرتب السمات",
+        7 to "7. تجميع حزمة APK ومحاذاة الموارد (ZipAlign 4-Byte)",
+        8 to "8. التوقيع الرقمي المزدوج (V1 JAR + APK Signature Scheme v2)",
+        9 to "9. مرحلة التحقق الإلزامية (APK VALIDATION — 8 Checks)"
     )
 
     fun getIsolatedProjectRootDir(projectName: String): File {
@@ -164,7 +164,7 @@ class RealApkCompilerEngine(private val context: Context) {
                     consoleLogs = logs.toList()
                 )
             )
-            delay(220L)
+            delay(200L)
         }
 
         try {
@@ -233,9 +233,11 @@ class RealApkCompilerEngine(private val context: Context) {
                 "عزل المشروع في Projects/$cleanAppSlug/output/$cleanAppSlug.apk"
             )
 
-            val upgradedHtml = injectStandaloneHeaderTitle(
+            val upgradedHtml = injectStandaloneHeaderAndAssets(
                 rawHtml = analysisReport.upgradedHtmlWithMedia3Bridge,
-                appName = project.name
+                appName = project.name,
+                cssCode = project.cssCode,
+                jsCode = project.jsCode
             )
             val channelsJson = buildChannelsJsonString(channels)
             val appConfigJson = buildAppConfigJsonString(
@@ -267,20 +269,24 @@ class RealApkCompilerEngine(private val context: Context) {
                 "إنشاء أيقونة مستقلة خاصة بتطبيق ${project.name} (${project.iconPreset})"
             )
 
-            // STEP 5: Load Clean Standalone Android Runtime DEX (Zero Studio classes)
+            // STEP 5: Load Clean Standalone Android Runtime DEX & Patch resources.arsc package name
             val standaloneDexBytes = loadStandaloneRuntimeDexBytes()
-            val standaloneResourcesArscBytes = loadStandaloneResourcesArscBytes()
+            val rawResourcesArscBytes = loadStandaloneResourcesArscBytes()
+            val patchedResourcesArscBytes = BinaryManifestAndZipAligner.patchResourcesArscPackageName(
+                arscBytes = rawResourcesArscBytes,
+                newPackageName = sanitizedPkg
+            )
             File(buildDir, "classes.dex").writeBytes(standaloneDexBytes)
-            File(buildDir, "resources.arsc").writeBytes(standaloneResourcesArscBytes)
+            File(buildDir, "resources.arsc").writeBytes(patchedResourcesArscBytes)
             File(buildDir, "ic_launcher.png").writeBytes(customIconPngBytes)
 
             emitStep(
                 4,
-                "Loaded clean standalone runtime DEX (${standaloneDexBytes.size} bytes, class=${BinaryManifestAndZipAligner.STANDALONE_MAIN_ACTIVITY_CLASS})...",
-                "تضمين المحرك التنفيذي المستقل بدون أي ملفات من تطبيق الاستوديو"
+                "Loaded clean standalone DEX (${standaloneDexBytes.size} bytes, API 21+) and synchronized resources.arsc package='$sanitizedPkg'...",
+                "تضمين المحرك التنفيذي ومزامنة resources.arsc مع $sanitizedPkg"
             )
 
-            // STEP 6: Generate Standalone Binary AndroidManifest.xml from scratch
+            // STEP 6: Generate Standalone Binary AndroidManifest.xml from scratch (with sorted resource IDs)
             val permissionsList = project.permissionsCsv.split(",")
                 .map { it.trim() }
                 .filter { it.isNotBlank() }
@@ -303,7 +309,7 @@ class RealApkCompilerEngine(private val context: Context) {
             emitStep(
                 5,
                 "Compiled standalone Binary AndroidManifest.xml (package=$sanitizedPkg, label=${project.name}, v=${project.versionName}/${project.versionCode})...",
-                "إنشاء Binary AndroidManifest.xml مستقل (package=$sanitizedPkg)"
+                "إنشاء Binary AndroidManifest.xml مستقل ومرتب السمات ($sanitizedPkg)"
             )
 
             // Write isolated source files on disk AND source ZIP archive
@@ -321,11 +327,11 @@ class RealApkCompilerEngine(private val context: Context) {
                 iconPngBytes = customIconPngBytes
             )
 
-            // STEP 7: Assemble Standalone APK Container from Clean Template (Never copying host APK!)
+            // STEP 7: Assemble Standalone APK Container & Perform 4-Byte ZipAlign BEFORE Signing
             emitStep(
                 6,
-                "Assembling standalone APK '${outputApkFile.name}' with 4-byte ZipAlign...",
-                "تجميع حزمة $cleanAppSlug.apk المستقلة تماماً ومحاذاة الموارد"
+                "Assembling standalone APK '${outputApkFile.name}' and performing 4-byte ZipAlign before signing...",
+                "تجميع حزمة $cleanAppSlug.apk ومحاذاة الموارد 4-Byte قبل التوقيع"
             )
 
             val isRelease = project.buildSigningMode == "RELEASE"
@@ -336,18 +342,18 @@ class RealApkCompilerEngine(private val context: Context) {
                 isReleaseMode = isRelease
             )
 
-            // STEP 8: Cryptographic APK Signing with Per-Project Persistent Keystore
+            // STEP 8: Cryptographic V1 + APK Signature Scheme v2 Signing + Disk Flush
             emitStep(
                 7,
-                "Signing standalone APK with persistent project keystore (${signingCreds.alias} / ${signingCreds.subjectDn})...",
-                "توقيع $cleanAppSlug.apk بمفتاح خاص بالمشروع ($sanitizedPkg)"
+                "Signing standalone APK with V1 (JAR) + APK Signature Scheme v2 (APK Sig Block 42, ${signingCreds.alias})...",
+                "توقيع $cleanAppSlug.apk عبر V1 + V2 (APK Signature Scheme v2)"
             )
 
             assembleStandaloneSignedApk(
                 outputApk = outputApkFile,
                 binaryManifestBytes = binaryManifestBytes,
                 standaloneDexBytes = standaloneDexBytes,
-                standaloneResourcesArscBytes = standaloneResourcesArscBytes,
+                standaloneResourcesArscBytes = patchedResourcesArscBytes,
                 customIconPngBytes = customIconPngBytes,
                 upgradedHtml = upgradedHtml,
                 cssCode = project.cssCode,
@@ -357,11 +363,11 @@ class RealApkCompilerEngine(private val context: Context) {
                 signingCredentials = signingCreds
             )
 
-            // STEP 9: Deep Binary Validation & Pre-Install Identity Inspection
+            // STEP 9: Mandatory 8-Point APK VALIDATION Gate
             emitStep(
                 8,
-                "Inspecting generated APK binary manifest: verifying package='$sanitizedPkg', label='${project.name}', and zero Studio overlap...",
-                "فحص الهوية الحقيقية داخل $cleanAppSlug.apk والتأكد من استقلاليته"
+                "Running mandatory 8-point APK VALIDATION gate on '${outputApkFile.name}' (${outputApkFile.length()} bytes)...",
+                "تنفيذ مرحلة التحقق الإلزامية (APK VALIDATION — 8 Checks)"
             )
 
             val validation = AndroidCompatibilityManager.validateGeneratedApkFile(
@@ -375,7 +381,7 @@ class RealApkCompilerEngine(private val context: Context) {
 
             if (!validation.isValid) {
                 val errorReason = validation.validationErrors.joinToString("\n• ", prefix = "• ")
-                throw IllegalStateException("فشل فحص صلاحية واستقلالية ملف APK الناتج:\n$errorReason")
+                throw IllegalStateException("فشل فحص صلاحية ملف APK الناتج في مرحلة APK VALIDATION:\n$errorReason")
             }
 
             val preInstallInspection = AndroidCompatibilityManager.inspectApkFileBeforeInstall(
@@ -384,10 +390,10 @@ class RealApkCompilerEngine(private val context: Context) {
                 selectedArchitecture = project.cpuArchitecture
             )
 
-            if (!preInstallInspection.isStandaloneFromStudio) {
+            if (!preInstallInspection.isStandaloneFromStudio || !preInstallInspection.canProceedWithInstall) {
                 throw IllegalStateException(
                     preInstallInspection.blockingErrorArabic
-                        ?: "تم إيقاف البناء: ملف APK الناتج يتعارض مع معرف حزمة الاستوديو."
+                        ?: "تم إيقاف البناء: ملف APK الناتج لم يجتز فحص ما قبل التثبيت."
                 )
             }
 
@@ -407,7 +413,7 @@ class RealApkCompilerEngine(private val context: Context) {
             }
 
             val detailedReport = DetailedBuildReport(
-                buildStatus = "✓ Build Successful (تطبيق مستقل 100%)",
+                buildStatus = "✓ Build & APK VALIDATION Successful (V1 + V2 Signed)",
                 appName = preInstallInspection.extractedAppName,
                 appDescription = project.appDescription,
                 apkSizeFormatted = formatFileSize(outputApkFile.length()),
@@ -419,8 +425,8 @@ class RealApkCompilerEngine(private val context: Context) {
                 packageName = preInstallInspection.extractedPackageName,
                 versionName = preInstallInspection.extractedVersionName,
                 versionCode = preInstallInspection.extractedVersionCode,
-                signingMode = if (isRelease) "Release APK (Project Keystore)" else "Debug APK (Project Keystore)",
-                signingStatus = "✓ APK Signed (${signingCreds.alias} • RSA-2048)",
+                signingMode = if (isRelease) "Release APK (V1 + V2 Keystore)" else "Debug APK (V1 + V2 Keystore)",
+                signingStatus = "✓ Signed (V1 JAR + APK Signature Scheme v2 • RSA-2048)",
                 keystorePath = signingCreds.keystoreFilePath,
                 certSha256Fingerprint = signingCreds.certSha256Fingerprint,
                 projectWorkspacePath = "Projects/$cleanAppSlug/",
@@ -430,7 +436,7 @@ class RealApkCompilerEngine(private val context: Context) {
                 preInstallInspection = preInstallInspection
             )
 
-            logs.add("[${totalDuration}ms] ✓ STANDALONE APK READY: ${detailedReport.outputApkPath} | App='${detailedReport.appName}' | Pkg='${detailedReport.packageName}' | Size=${detailedReport.apkSizeFormatted}")
+            logs.add("[${totalDuration}ms] ✓ APK VALIDATION PASSED (8/8): ${detailedReport.outputApkPath} | Pkg='${detailedReport.packageName}' | V1+V2 Signed | Size=${detailedReport.apkSizeFormatted}")
 
             emit(
                 ApkBuildProgress.Completed(
@@ -457,14 +463,15 @@ class RealApkCompilerEngine(private val context: Context) {
     }.flowOn(Dispatchers.IO)
 
     /**
-     * Assembles a 100% standalone, clean Android APK containing ONLY:
-     * 1. The dynamically generated Binary `AndroidManifest.xml` with the user's `packageName` and `appName`.
-     * 2. The clean `resources.arsc` (STORED, 4-byte aligned) and custom `res/drawable/ic_launcher.png`.
-     * 3. The clean standalone `classes.dex` (`com.standalone.runtime.StandaloneMainActivity`).
-     * 4. The user's HTML, CSS, JS, IPTV channels JSON, and app config JSON in `assets/`.
-     * 5. Fresh cryptographic JAR/V1 signature (`META-INF/MANIFEST.MF`, `CERT.SF`, `CERT.RSA`).
-     *
-     * NEVER copies or references `context.applicationInfo.sourceDir` (HTML TO APK STUDIO).
+     * Assembles a 100% standalone, clean Android APK in the exact order required by Android:
+     * 1. Packages all entries (`AndroidManifest.xml`, 4-byte aligned `STORED` `resources.arsc`,
+     *    4-byte aligned `STORED` `res/drawable/ic_launcher.png`, `classes.dex`, and `assets/`).
+     * 2. Adds V1 JAR signature entries (`META-INF/MANIFEST.MF`, `META-INF/CERT.SF` with
+     *    `X-Android-APK-Signed: 2`, and `META-INF/CERT.RSA`).
+     * 3. Injects the **APK Signature Scheme v2 (`APK Sig Block 42`, ID `0x7109871a`)** block
+     *    immediately before the ZIP Central Directory.
+     * 4. Writes the complete signed bytes to `outputApk` and forces `fd.sync()` so no bytes
+     *    are ever modified or left buffered after signing.
      */
     private fun assembleStandaloneSignedApk(
         outputApk: File,
@@ -480,7 +487,8 @@ class RealApkCompilerEngine(private val context: Context) {
         signingCredentials: RealApkSignerEngine.SigningCredentials
     ) {
         val entryDigestsBase64 = linkedMapOf<String, String>()
-        val countingOut = CountingOutputStream(BufferedOutputStream(FileOutputStream(outputApk)))
+        val v1ZipBuffer = ByteArrayOutputStream(65536)
+        val countingOut = CountingOutputStream(v1ZipBuffer)
 
         ZipOutputStream(countingOut).use { zos ->
             // 1. Binary AndroidManifest.xml
@@ -503,7 +511,7 @@ class RealApkCompilerEngine(private val context: Context) {
             )
             entryDigestsBase64["resources.arsc"] = sha256Base64(standaloneResourcesArscBytes)
 
-            // 3. Custom generated App Icon PNG (res/drawable/ic_launcher.png)
+            // 3. Custom generated App Icon PNG (res/drawable/ic_launcher.png, STORED and 4-byte aligned)
             writeAlignedEntryToZip(
                 zos = zos,
                 countingOut = countingOut,
@@ -549,7 +557,7 @@ class RealApkCompilerEngine(private val context: Context) {
                 entryDigestsBase64[assetName] = sha256Base64(assetBytes)
             }
 
-            // 6. Cryptographic APK Signature in META-INF/
+            // 6. Cryptographic V1 JAR Signature in META-INF/
             val sigFiles = RealApkSignerEngine.generateApkSignatureFiles(
                 entrySha256DigestsBase64 = entryDigestsBase64,
                 credentials = signingCredentials
@@ -558,6 +566,24 @@ class RealApkCompilerEngine(private val context: Context) {
             writeAlignedEntryToZip(zos, countingOut, "META-INF/MANIFEST.MF", sigFiles.manifestMfBytes, false)
             writeAlignedEntryToZip(zos, countingOut, sigFiles.sfEntryName, sigFiles.certSfBytes, false)
             writeAlignedEntryToZip(zos, countingOut, sigFiles.rsaEntryName, sigFiles.certRsaBytes, false)
+        }
+
+        // 7. Inject APK Signature Scheme v2 Block (`APK Sig Block 42`, ID `0x7109871a`)
+        val zipAlignedV1Bytes = v1ZipBuffer.toByteArray()
+        val finalV1AndV2SignedApkBytes = RealApkSignerEngine.injectApkSignatureSchemeV2Block(
+            zipAlignedV1ApkBytes = zipAlignedV1Bytes,
+            credentials = signingCredentials
+        )
+
+        // 8. Write atomically and sync file descriptor to disk
+        outputApk.parentFile?.mkdirs()
+        FileOutputStream(outputApk).use { fos ->
+            fos.write(finalV1AndV2SignedApkBytes)
+            fos.flush()
+            try {
+                fos.fd.sync()
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -720,13 +746,35 @@ class RealApkCompilerEngine(private val context: Context) {
         }
     }
 
-    private fun injectStandaloneHeaderTitle(rawHtml: String, appName: String): String {
-        val hasTitle = rawHtml.contains("<title>", ignoreCase = true)
-        return if (hasTitle) {
+    private fun injectStandaloneHeaderAndAssets(
+        rawHtml: String,
+        appName: String,
+        cssCode: String,
+        jsCode: String
+    ): String {
+        var html = if (rawHtml.contains("<title>", ignoreCase = true)) {
             rawHtml.replace(Regex("<title>.*?</title>", RegexOption.IGNORE_CASE), "<title>$appName</title>")
         } else {
             rawHtml
         }
+
+        if (cssCode.isNotBlank() && !html.contains("style.css", ignoreCase = true)) {
+            html = if (html.contains("</head>", ignoreCase = true)) {
+                html.replaceFirst(Regex("</head>", RegexOption.IGNORE_CASE), "    <link rel=\"stylesheet\" href=\"style.css\">\n</head>")
+            } else {
+                "<link rel=\"stylesheet\" href=\"style.css\">\n$html"
+            }
+        }
+
+        if (jsCode.isNotBlank() && !html.contains("app.js", ignoreCase = true)) {
+            html = if (html.contains("</body>", ignoreCase = true)) {
+                html.replaceFirst(Regex("</body>", RegexOption.IGNORE_CASE), "    <script src=\"app.js\"></script>\n</body>")
+            } else {
+                "$html\n<script src=\"app.js\"></script>"
+            }
+        }
+
+        return html
     }
 
     private fun writeAlignedEntryToZip(
@@ -1055,14 +1103,14 @@ class RealApkCompilerEngine(private val context: Context) {
     }
 
     /**
-     * Performs a mandatory Pre-Install Identity & Security Check on the `.apk` file before
-     * launching the Android PackageInstaller. Strictly blocks installation if the APK's
-     * packageName matches `HTML TO APK STUDIO`.
+     * Performs a mandatory Pre-Install Identity & 8-Check `APK VALIDATION` verification on the
+     * `.apk` file before launching the Android PackageInstaller. Strictly blocks installation
+     * if the file is incomplete, invalid, or matches `HTML TO APK STUDIO`.
      */
     fun installGeneratedApk(apkFile: File): Result<Unit> {
         return try {
-            if (!apkFile.exists()) {
-                return Result.failure(IllegalStateException("ملف APK غير موجود: ${apkFile.absolutePath}"))
+            if (!apkFile.exists() || apkFile.length() < 256L) {
+                return Result.failure(IllegalStateException("ملف APK غير موجود أو غير مكتمل الحفظ: ${apkFile.absolutePath}"))
             }
 
             val inspection = AndroidCompatibilityManager.inspectApkFileBeforeInstall(context, apkFile)
@@ -1078,7 +1126,7 @@ class RealApkCompilerEngine(private val context: Context) {
                 return Result.failure(
                     IllegalStateException(
                         inspection.blockingErrorArabic
-                            ?: "ملف APK غير جاهز للتثبيت على هذا الجهاز."
+                            ?: "ملف APK لم يجتز فحوصات APK VALIDATION وغير جاهز للتثبيت."
                     )
                 )
             }
@@ -1104,12 +1152,26 @@ class RealApkCompilerEngine(private val context: Context) {
                 apkFile
             )
 
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(apkUri, "application/vnd.android.package-archive")
+            @Suppress("DEPRECATION")
+            val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                data = apkUri
+                type = "application/vnd.android.package-archive"
+                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+                putExtra(Intent.EXTRA_RETURN_RESULT, false)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            context.startActivity(installIntent)
+
+            try {
+                context.startActivity(installIntent)
+            } catch (_: Exception) {
+                val fallbackViewIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(apkUri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallbackViewIntent)
+            }
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)

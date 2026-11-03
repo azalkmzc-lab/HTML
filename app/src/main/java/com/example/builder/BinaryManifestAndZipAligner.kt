@@ -1,13 +1,15 @@
 package com.example.builder
 
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 
 /**
- * Generator, Inspector, and Aligner for Android's compiled Binary XML (`AndroidManifest.xml`)
- * and 4-byte ZIP Alignment.
+ * Generator, Inspector, and Aligner for Android's compiled Binary XML (`AndroidManifest.xml`),
+ * `resources.arsc` package synchronization, and 4-byte ZIP Alignment.
  *
  * Ensures every generated APK is a 100% standalone Android application with its own independent
  * `packageName`, `android:label` (App Name), `versionCode`, `versionName`, `minSdkVersion`,
@@ -18,6 +20,8 @@ object BinaryManifestAndZipAligner {
 
     private const val RES_XML_TYPE = 0x0003
     private const val RES_STRING_POOL_TYPE = 0x0001
+    private const val RES_TABLE_TYPE = 0x0002
+    private const val RES_TABLE_PACKAGE_TYPE = 0x0200
     private const val RES_XML_RESOURCE_MAP_TYPE = 0x0180
     private const val RES_XML_START_NAMESPACE_TYPE = 0x0100
     private const val RES_XML_END_NAMESPACE_TYPE = 0x0101
@@ -31,7 +35,7 @@ object BinaryManifestAndZipAligner {
     private const val TYPE_INT_HEX = 0x11
     private const val TYPE_INT_BOOLEAN = 0x12
 
-    // Standard Android framework resource IDs (sorted in ascending order)
+    // Standard Android framework resource IDs (sorted in strictly ascending order)
     private const val ATTR_LABEL = 0x01010001
     private const val ATTR_ICON = 0x01010002
     private const val ATTR_NAME = 0x01010003
@@ -61,7 +65,8 @@ object BinaryManifestAndZipAligner {
         val versionNameFound: String? = null,
         val compileSdkFound: Int? = null,
         val launcherActivityFound: String? = null,
-        val permissionsFound: List<String> = emptyList()
+        val permissionsFound: List<String> = emptyList(),
+        val areAttributesSortedByResId: Boolean = true
     )
 
     private data class AxmlAttr(
@@ -76,6 +81,10 @@ object BinaryManifestAndZipAligner {
     /**
      * Generates a complete, 100% standalone compiled Binary AXML (`AndroidManifest.xml`) from scratch
      * for the target user application. Contains ZERO references to HTML TO APK STUDIO.
+     *
+     * Strictly sorts all element attributes by ascending Android resource ID (`0x0101xxxx`) first,
+     * followed by non-resource attributes (such as `package` on `<manifest>`), as required by
+     * Android's C++ `ResXMLTree` binary search (`indexOfAttribute`).
      */
     fun generateStandaloneBinaryManifest(
         packageName: String,
@@ -96,20 +105,19 @@ object BinaryManifestAndZipAligner {
         // 1. Attribute names with framework resource IDs MUST come first in the String Pool
         //    in ascending order of resource ID so RES_XML_RESOURCE_MAP_TYPE aligns 1:1.
         val resourceMappedAttrs = listOf(
-            "label" to ATTR_LABEL,                               // 0
-            "icon" to ATTR_ICON,                                 // 1
-            "name" to ATTR_NAME,                                 // 2
-            "exported" to ATTR_EXPORTED,                         // 3
-            "screenOrientation" to ATTR_SCREEN_ORIENTATION,       // 4
-            "configChanges" to ATTR_CONFIG_CHANGES,              // 5
-            "minSdkVersion" to ATTR_MIN_SDK_VERSION,             // 6
-            "versionCode" to ATTR_VERSION_CODE,                  // 7
-            "versionName" to ATTR_VERSION_NAME,                  // 8
-            "targetSdkVersion" to ATTR_TARGET_SDK_VERSION,       // 9
-            "allowBackup" to ATTR_ALLOW_BACKUP,                  // 10
-            "supportsRtl" to ATTR_SUPPORTS_RTL,                  // 11
-            "usesCleartextTraffic" to ATTR_USES_CLEARTEXT_TRAFFIC, // 12
-            "compileSdkVersion" to ATTR_COMPILE_SDK_VERSION      // 13
+            "label" to ATTR_LABEL,                               // 0 (0x01010001)
+            "icon" to ATTR_ICON,                                 // 1 (0x01010002)
+            "name" to ATTR_NAME,                                 // 2 (0x01010003)
+            "exported" to ATTR_EXPORTED,                         // 3 (0x01010010)
+            "screenOrientation" to ATTR_SCREEN_ORIENTATION,       // 4 (0x0101001e)
+            "configChanges" to ATTR_CONFIG_CHANGES,              // 5 (0x0101001f)
+            "minSdkVersion" to ATTR_MIN_SDK_VERSION,             // 6 (0x0101020c)
+            "versionCode" to ATTR_VERSION_CODE,                  // 7 (0x0101021b)
+            "versionName" to ATTR_VERSION_NAME,                  // 8 (0x0101021c)
+            "targetSdkVersion" to ATTR_TARGET_SDK_VERSION,       // 9 (0x01010270)
+            "allowBackup" to ATTR_ALLOW_BACKUP,                  // 10 (0x01010280)
+            "supportsRtl" to ATTR_SUPPORTS_RTL,                  // 11 (0x010103af)
+            "usesCleartextTraffic" to ATTR_USES_CLEARTEXT_TRAFFIC // 12 (0x010104ec)
         )
 
         val stringList = mutableListOf<String>()
@@ -140,7 +148,6 @@ object BinaryManifestAndZipAligner {
         val idxAllowBackup = 10
         val idxSupportsRtl = 11
         val idxCleartext = 12
-        val idxCompileSdk = 13
 
         // Non-resource strings (elements, namespaces, values)
         val idxNsPrefix = getOrAddString("android")
@@ -170,10 +177,10 @@ object BinaryManifestAndZipAligner {
         val idxCategory = getOrAddString("category")
         val idxCategoryLauncherValue = getOrAddString("android.intent.category.LAUNCHER")
 
-        val orientInt = when (orientationMode.uppercase()) {
+        val orientInt: Int? = when (orientationMode.uppercase()) {
             "LANDSCAPE" -> 0 // ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             "PORTRAIT" -> 1  // ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            else -> -1       // ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            else -> null     // Unspecified / Auto (omit attribute for cleanest manifest)
         }
 
         // Build XML chunks
@@ -182,16 +189,9 @@ object BinaryManifestAndZipAligner {
         // Start Namespace: xmlns:android="http://schemas.android.com/apk/res/android"
         xmlChunks.write(buildNamespaceChunk(isStart = true, line = 2, prefixIdx = idxNsPrefix, uriIdx = idxNsUri))
 
-        // <manifest package="..." android:versionCode="..." android:versionName="..." android:compileSdkVersion="...">
+        // <manifest android:versionCode="..." android:versionName="..." package="...">
+        // Resource-ID attributes (0x0101021b, 0x0101021c) MUST precede non-resource attribute (package)
         val manifestAttrs = listOf(
-            AxmlAttr(
-                nsIndex = -1,
-                nameIndex = idxPackageAttr,
-                rawValueIndex = idxPkgValue,
-                dataType = TYPE_STRING,
-                dataValue = idxPkgValue,
-                sortResourceId = 0
-            ),
             AxmlAttr(
                 nsIndex = idxNsUri,
                 nameIndex = idxVersionCode,
@@ -209,12 +209,12 @@ object BinaryManifestAndZipAligner {
                 sortResourceId = ATTR_VERSION_NAME
             ),
             AxmlAttr(
-                nsIndex = idxNsUri,
-                nameIndex = idxCompileSdk,
-                rawValueIndex = -1,
-                dataType = TYPE_INT_DEC,
-                dataValue = compileSdk,
-                sortResourceId = ATTR_COMPILE_SDK_VERSION
+                nsIndex = -1,
+                nameIndex = idxPackageAttr,
+                rawValueIndex = idxPkgValue,
+                dataType = TYPE_STRING,
+                dataValue = idxPkgValue,
+                sortResourceId = 0
             )
         )
         xmlChunks.write(buildStartElementChunk(line = 2, nameIdx = idxManifest, attrs = manifestAttrs))
@@ -302,7 +302,7 @@ object BinaryManifestAndZipAligner {
         )
         xmlChunks.write(buildStartElementChunk(line = 12, nameIdx = idxApplication, attrs = appAttrs))
 
-        // <activity android:label="..." android:icon="@0x7f010000" android:name="com.standalone.runtime.StandaloneMainActivity" android:exported="true" android:screenOrientation="..." android:configChanges="0x04a0">
+        // <activity android:label="..." android:icon="@0x7f010000" android:name="com.standalone.runtime.StandaloneMainActivity" android:exported="true" [android:screenOrientation="..."] android:configChanges="0x04a0">
         val activityAttrs = mutableListOf(
             AxmlAttr(
                 nsIndex = idxNsUri,
@@ -335,15 +335,21 @@ object BinaryManifestAndZipAligner {
                 dataType = TYPE_INT_BOOLEAN,
                 dataValue = -1,
                 sortResourceId = ATTR_EXPORTED
-            ),
-            AxmlAttr(
-                nsIndex = idxNsUri,
-                nameIndex = idxScreenOrientation,
-                rawValueIndex = -1,
-                dataType = TYPE_INT_DEC,
-                dataValue = orientInt,
-                sortResourceId = ATTR_SCREEN_ORIENTATION
-            ),
+            )
+        )
+        if (orientInt != null) {
+            activityAttrs.add(
+                AxmlAttr(
+                    nsIndex = idxNsUri,
+                    nameIndex = idxScreenOrientation,
+                    rawValueIndex = -1,
+                    dataType = TYPE_INT_DEC,
+                    dataValue = orientInt,
+                    sortResourceId = ATTR_SCREEN_ORIENTATION
+                )
+            )
+        }
+        activityAttrs.add(
             AxmlAttr(
                 nsIndex = idxNsUri,
                 nameIndex = idxConfigChanges,
@@ -411,6 +417,77 @@ object BinaryManifestAndZipAligner {
         finalBuffer.put(resourceMapBytes)
         finalBuffer.put(xmlNodeBytes)
         return finalBuffer.array()
+    }
+
+    /**
+     * Patches the 256-byte `char16_t name[128]` inside `ResTable_package` of `resources.arsc`
+     * so that `resources.arsc` has the exact same `packageName` as `AndroidManifest.xml`.
+     */
+    fun patchResourcesArscPackageName(arscBytes: ByteArray, newPackageName: String): ByteArray {
+        if (arscBytes.size < 364) return arscBytes
+        val out = arscBytes.copyOf()
+        val buf = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN)
+        val type = buf.getShort(0).toInt() and 0xFFFF
+        if (type != RES_TABLE_TYPE) return out
+
+        val headerSize = buf.getShort(2).toInt() and 0xFFFF
+        val totalSize = buf.getInt(4).coerceAtMost(out.size)
+        var offset = headerSize
+
+        while (offset + 8 <= totalSize) {
+            val chunkType = buf.getShort(offset).toInt() and 0xFFFF
+            val chunkSize = buf.getInt(offset + 4)
+            if (chunkSize <= 0 || offset + chunkSize > totalSize) break
+
+            if (chunkType == RES_TABLE_PACKAGE_TYPE && offset + 12 + 256 <= totalSize) {
+                val nameStart = offset + 12
+                // Zero out the 256-byte char16_t[128] buffer
+                for (i in 0 until 256) {
+                    out[nameStart + i] = 0
+                }
+                val cleanName = newPackageName.trim().take(127)
+                val utf16Bytes = cleanName.toByteArray(StandardCharsets.UTF_16LE)
+                val copyLen = utf16Bytes.size.coerceAtMost(254)
+                System.arraycopy(utf16Bytes, 0, out, nameStart, copyLen)
+                break
+            }
+            offset += chunkSize
+        }
+        return out
+    }
+
+    /**
+     * Extracts the package name stored inside `ResTable_package` of `resources.arsc`.
+     */
+    fun extractResourcesArscPackageName(arscBytes: ByteArray): String? {
+        if (arscBytes.size < 364) return null
+        val buf = ByteBuffer.wrap(arscBytes).order(ByteOrder.LITTLE_ENDIAN)
+        val type = buf.getShort(0).toInt() and 0xFFFF
+        if (type != RES_TABLE_TYPE) return null
+
+        val headerSize = buf.getShort(2).toInt() and 0xFFFF
+        val totalSize = buf.getInt(4).coerceAtMost(arscBytes.size)
+        var offset = headerSize
+
+        while (offset + 8 <= totalSize) {
+            val chunkType = buf.getShort(offset).toInt() and 0xFFFF
+            val chunkSize = buf.getInt(offset + 4)
+            if (chunkSize <= 0 || offset + chunkSize > totalSize) break
+
+            if (chunkType == RES_TABLE_PACKAGE_TYPE && offset + 12 + 256 <= totalSize) {
+                val nameStart = offset + 12
+                var charCount = 0
+                while (charCount < 128) {
+                    val ch = buf.getShort(nameStart + charCount * 2).toInt() and 0xFFFF
+                    if (ch == 0) break
+                    charCount++
+                }
+                if (charCount == 0) return ""
+                return String(arscBytes, nameStart, charCount * 2, StandardCharsets.UTF_16LE)
+            }
+            offset += chunkSize
+        }
+        return null
     }
 
     private fun buildUtf16StringPoolChunk(strings: List<String>): ByteArray {
@@ -486,7 +563,16 @@ object BinaryManifestAndZipAligner {
     }
 
     private fun buildStartElementChunk(line: Int, nameIdx: Int, attrs: List<AxmlAttr>): ByteArray {
-        val chunkSize = 36 + attrs.size * 20
+        // Enforce Android ResXMLTree attribute sorting rule:
+        // All attributes with resource IDs (> 0) come first in ascending order of resource ID,
+        // followed by non-resource attributes (sortResourceId == 0) sorted by nameIndex.
+        val sortedAttrs = attrs.sortedWith(
+            compareBy<AxmlAttr> { if (it.sortResourceId > 0) 0 else 1 }
+                .thenBy { it.sortResourceId }
+                .thenBy { it.nameIndex }
+        )
+
+        val chunkSize = 36 + sortedAttrs.size * 20
         val buf = ByteBuffer.allocate(chunkSize).order(ByteOrder.LITTLE_ENDIAN)
         buf.putShort(RES_XML_START_ELEMENT_TYPE.toShort())
         buf.putShort(16.toShort())
@@ -497,12 +583,12 @@ object BinaryManifestAndZipAligner {
         buf.putInt(nameIdx)
         buf.putShort(20.toShort()) // attributeStart
         buf.putShort(20.toShort()) // attributeSize
-        buf.putShort(attrs.size.toShort()) // attributeCount
+        buf.putShort(sortedAttrs.size.toShort()) // attributeCount
         buf.putShort(0.toShort()) // idIndex
         buf.putShort(0.toShort()) // classIndex
         buf.putShort(0.toShort()) // styleIndex
 
-        for (attr in attrs) {
+        for (attr in sortedAttrs) {
             buf.putInt(attr.nsIndex)
             buf.putInt(attr.nameIndex)
             buf.putInt(attr.rawValueIndex)
@@ -642,6 +728,7 @@ object BinaryManifestAndZipAligner {
         var versionNameFound: String? = null
         var launcherActivityFound: String? = null
         val permissionsFound = mutableListOf<String>()
+        var areAttributesSortedByResId = true
 
         while (offset + 8 <= axmlBytes.size && offset < totalSize) {
             val chunkType = buf.getShort(offset).toInt() and 0xFFFF
@@ -672,6 +759,8 @@ object BinaryManifestAndZipAligner {
                         val attrCount = buf.getShort(offset + 28).toInt() and 0xFFFF
                         val attrsBase = offset + 16 + attrStart
                         if (attrSize >= 20) {
+                            var lastResId = 0
+                            var seenNonResAttr = false
                             for (i in 0 until attrCount) {
                                 val attrPos = attrsBase + i * attrSize
                                 if (attrPos + 20 > axmlBytes.size) break
@@ -682,6 +771,15 @@ object BinaryManifestAndZipAligner {
 
                                 val attrName = stringPool.getOrNull(attrNameIdx) ?: ""
                                 val resId = if (attrNameIdx in resourceIds.indices) resourceIds[attrNameIdx] else 0
+                                if (resId > 0) {
+                                    if (seenNonResAttr || resId < lastResId) {
+                                        areAttributesSortedByResId = false
+                                    }
+                                    lastResId = resId
+                                } else {
+                                    seenNonResAttr = true
+                                }
+
                                 val strVal = when {
                                     rawValIdx in stringPool.indices -> stringPool[rawValIdx]
                                     dataType == TYPE_STRING && dataVal in stringPool.indices -> stringPool[dataVal]
@@ -731,7 +829,8 @@ object BinaryManifestAndZipAligner {
             versionNameFound = versionNameFound,
             compileSdkFound = compileSdk,
             launcherActivityFound = launcherActivityFound,
-            permissionsFound = permissionsFound
+            permissionsFound = permissionsFound,
+            areAttributesSortedByResId = areAttributesSortedByResId
         )
     }
 
@@ -828,5 +927,86 @@ object BinaryManifestAndZipAligner {
         val remainder = (dataStartWithoutPadding % 4L).toInt()
         val padNeeded = if (remainder == 0) 0 else (4 - remainder)
         return ByteArray(padNeeded)
+    }
+
+    /**
+     * Verifies 4-byte ZIP alignment (`zipalign -c 4`) for all uncompressed (`STORED`) entries
+     * inside the APK file by inspecting every Local File Header referenced by the Central Directory.
+     */
+    fun verifyZipAlignment(apkFile: File): Pair<Boolean, List<String>> {
+        if (!apkFile.exists() || apkFile.length() < 64L) {
+            return false to listOf("ملف APK غير موجود أو صغير جداً لفحص ZipAlign.")
+        }
+        val misalignedEntries = mutableListOf<String>()
+        return try {
+            RandomAccessFile(apkFile, "r").use { raf ->
+                val fileLen = raf.length()
+                val searchSize = minOf(fileLen, 65557L).toInt()
+                val tail = ByteArray(searchSize)
+                raf.seek(fileLen - searchSize)
+                raf.readFully(tail)
+                val tailBuf = ByteBuffer.wrap(tail).order(ByteOrder.LITTLE_ENDIAN)
+
+                var eocdPos = -1
+                for (i in searchSize - 22 downTo 0) {
+                    if (tailBuf.getInt(i) == 0x06054b50) {
+                        eocdPos = i
+                        break
+                    }
+                }
+                if (eocdPos < 0) {
+                    return false to listOf("تعذر العثور على نهاية أرشيف ZIP (EOCD) أثناء فحص ZipAlign.")
+                }
+
+                val cdEntriesCount = tailBuf.getShort(eocdPos + 10).toInt() and 0xFFFF
+                val cdOffset = tailBuf.getInt(eocdPos + 16).toLong() and 0xFFFFFFFFL
+                val cdSize = tailBuf.getInt(eocdPos + 12).toInt()
+
+                if (cdOffset + cdSize > fileLen) {
+                    return false to listOf("موقع Central Directory غير صالح داخل APK.")
+                }
+
+                val cdBytes = ByteArray(cdSize)
+                raf.seek(cdOffset)
+                raf.readFully(cdBytes)
+                val cdBuf = ByteBuffer.wrap(cdBytes).order(ByteOrder.LITTLE_ENDIAN)
+
+                var pos = 0
+                val lfhHeader = ByteArray(30)
+                val lfhBuf = ByteBuffer.wrap(lfhHeader).order(ByteOrder.LITTLE_ENDIAN)
+
+                for (entryIdx in 0 until cdEntriesCount) {
+                    if (pos + 46 > cdSize) break
+                    val sig = cdBuf.getInt(pos)
+                    if (sig != 0x02014b50) break
+
+                    val method = cdBuf.getShort(pos + 10).toInt() and 0xFFFF
+                    val nameLen = cdBuf.getShort(pos + 28).toInt() and 0xFFFF
+                    val cdExtraLen = cdBuf.getShort(pos + 30).toInt() and 0xFFFF
+                    val commentLen = cdBuf.getShort(pos + 32).toInt() and 0xFFFF
+                    val lfhOffset = cdBuf.getInt(pos + 42).toLong() and 0xFFFFFFFFL
+
+                    val nameBytes = ByteArray(nameLen)
+                    System.arraycopy(cdBytes, pos + 46, nameBytes, 0, nameLen)
+                    val entryName = String(nameBytes, StandardCharsets.UTF_8)
+
+                    if (method == 0) { // STORED (uncompressed)
+                        raf.seek(lfhOffset)
+                        raf.readFully(lfhHeader)
+                        val lfhNameLen = lfhBuf.getShort(26).toInt() and 0xFFFF
+                        val lfhExtraLen = lfhBuf.getShort(28).toInt() and 0xFFFF
+                        val dataStartOffset = lfhOffset + 30L + lfhNameLen + lfhExtraLen
+                        if (dataStartOffset % 4L != 0L) {
+                            misalignedEntries.add("$entryName (offset=$dataStartOffset, rem=${dataStartOffset % 4L})")
+                        }
+                    }
+
+                    pos += 46 + nameLen + cdExtraLen + commentLen
+                }
+            }
+            (misalignedEntries.isEmpty()) to misalignedEntries
+        } catch (e: Exception) {
+            false to listOf("خطأ أثناء فحص محاذاة ZipAlign: ${e.localizedMessage}")
+        }
     }
 }

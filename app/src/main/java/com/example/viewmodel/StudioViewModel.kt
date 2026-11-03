@@ -634,13 +634,33 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val context = getApplication<Application>()
+                if (!sourceFile.exists() || sourceFile.length() < 256L) {
+                    withContext(Dispatchers.Main) {
+                        showStatus("ملف APK غير موجود أو غير مكتمل. يرجى بناء التطبيق أولاً.")
+                    }
+                    return@launch
+                }
+                val inspection = AndroidCompatibilityManager.inspectApkFileBeforeInstall(context, sourceFile)
+                if (!inspection.canProceedWithInstall) {
+                    withContext(Dispatchers.Main) {
+                        showStatus("تم إيقاف الحفظ: ${inspection.blockingErrorArabic ?: "ملف APK غير صالح"}")
+                    }
+                    return@launch
+                }
                 context.contentResolver.openOutputStream(targetUri)?.use { out: OutputStream ->
                     FileInputStream(sourceFile).use { input ->
                         input.copyTo(out)
                     }
+                    out.flush()
+                    if (out is java.io.FileOutputStream) {
+                        try {
+                            out.fd.sync()
+                        } catch (_: Exception) {
+                        }
+                    }
                 }
                 withContext(Dispatchers.Main) {
-                    showStatus("تم حفظ ملف APK في ذاكرة الهاتف بنجاح! (${RealApkCompilerEngine.formatFileSize(sourceFile.length())})")
+                    showStatus("تم حفظ ملف APK الموقّع (V1+V2) في ذاكرة الهاتف بنجاح! (${RealApkCompilerEngine.formatFileSize(sourceFile.length())})")
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {

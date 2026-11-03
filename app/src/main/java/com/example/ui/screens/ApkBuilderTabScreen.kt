@@ -745,6 +745,7 @@ fun ApkBuilderTabScreen(
 
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         val quickExamples = listOf(
+                            "App 6010" to "com.app6010.live",
                             "XTV" to "com.xtv.live",
                             "SPORT" to "com.sport.live",
                             "MOVIES" to "com.movies.player"
@@ -976,18 +977,17 @@ fun ApkBuilderTabScreen(
             containerColor = StudioSurface,
             title = {
                 Text(
-                    text = "فحص الهوية الحقيقية داخل APK قبل التثبيت",
+                    text = "APK VALIDATION & فحص الحزمة قبل التثبيت",
                     style = MaterialTheme.typography.titleLarge,
                     color = NeonCyan,
                     fontWeight = FontWeight.Bold
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text("• App Name: ${preInstallInspection.extractedAppName}", color = TextPrimary, fontWeight = FontWeight.Bold)
                     Text("• Package Name: ${preInstallInspection.extractedPackageName}", color = NeonCyan, fontWeight = FontWeight.Bold)
-                    Text("• Version Name: ${preInstallInspection.extractedVersionName}", color = TextPrimary)
-                    Text("• Version Code: ${preInstallInspection.extractedVersionCode}", color = TextPrimary)
+                    Text("• Version: ${preInstallInspection.extractedVersionName} (Code: ${preInstallInspection.extractedVersionCode})", color = TextPrimary)
                     Text("• Minimum SDK: ${AndroidCompatibilityManager.formatSdkWithAndroidName(preInstallInspection.extractedMinSdk)}", color = NeonCyan)
                     Text("• Target SDK: ${AndroidCompatibilityManager.formatSdkWithAndroidName(preInstallInspection.extractedTargetSdk)}", color = NeonCyan)
                     Text("• APK Size: ${preInstallInspection.apkSizeFormatted}", color = TextPrimary)
@@ -995,11 +995,21 @@ fun ApkBuilderTabScreen(
                         text = "• Signing Status: ${preInstallInspection.signingStatus}",
                         color = if (preInstallInspection.isSigned) EmeraldGreen else CrimsonError
                     )
+                    HorizontalDivider(color = StudioCardBorder)
                     Text(
-                        text = "• الاستقلالية عن الاستوديو: ${if (preInstallInspection.isStandaloneFromStudio) "✓ تطبيق مستقل 100% عن HTML TO APK STUDIO" else "✗ مطابق لحزمة الاستوديو (محظور!)"}",
-                        color = if (preInstallInspection.isStandaloneFromStudio) EmeraldGreen else CrimsonError,
-                        fontWeight = FontWeight.Bold
+                        text = "مرحلة التحقق الإلزامية (APK VALIDATION):",
+                        color = NeonCyan,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelLarge
                     )
+                    preInstallInspection.validationChecklist.forEach { item ->
+                        Text(
+                            text = "${if (item.isPassed) "✓" else "✗"} ${item.titleEnglish}",
+                            color = if (item.isPassed) EmeraldGreen else CrimsonError,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
                     HorizontalDivider(color = StudioCardBorder)
                     if (preInstallInspection.blockingErrorArabic != null) {
                         Text(
@@ -1010,7 +1020,7 @@ fun ApkBuilderTabScreen(
                         )
                     } else {
                         Text(
-                            text = "✓ تم التحقق من الهوية المستقلة (${preInstallInspection.extractedPackageName}) وجاهزية الحزمة للتثبيت بجانب جميع التطبيقات الأخرى.",
+                            text = "✓ اجتاز ملف APK جميع الفحوصات الـ 8 (V1 + V2 Signed & 4-Byte ZipAligned) وجاهز للتثبيت فوراً.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = EmeraldGreen,
                             fontWeight = FontWeight.Bold
@@ -1245,6 +1255,53 @@ private fun BuildProgressCardSection(
                 val report = buildState.detailedReport
                 HorizontalDivider(color = StudioCardBorder)
 
+                // Dedicated 8-Point APK VALIDATION Gate Card
+                Surface(
+                    color = StudioSurfaceVariant,
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, NeonCyan.copy(alpha = 0.6f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("apk_validation_gate_card")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "APK VALIDATION (فحص سلامة وتوقيع ومحاذاة الحزمة الحقيقية):",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = NeonCyan,
+                            fontWeight = FontWeight.Bold
+                        )
+                        report.apkValidationResult.validationChecklist.forEach { check ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = if (check.isPassed) "✓" else "✗",
+                                    color = if (check.isPassed) EmeraldGreen else CrimsonError,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Column {
+                                    Text(
+                                        text = check.titleEnglish,
+                                        color = if (check.isPassed) EmeraldGreen else CrimsonError,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                    Text(
+                                        text = check.descriptionArabic,
+                                        color = TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Surface(
                     color = StudioSurfaceVariant,
                     shape = RoundedCornerShape(14.dp),
@@ -1263,7 +1320,7 @@ private fun BuildProgressCardSection(
                         )
                         Text("✓ Build Status: ${report.buildStatus}", color = EmeraldGreen, fontWeight = FontWeight.Bold)
                         Text("✓ App Name (داخل APK): ${report.appName}", color = TextPrimary, fontWeight = FontWeight.Bold)
-                        Text("✓ Package Name (داخل APK): ${report.packageName}", color = NeonCyan, fontWeight = FontWeight.Bold)
+                        Text("✓ Package Name (داخل APK & resources.arsc): ${report.packageName}", color = NeonCyan, fontWeight = FontWeight.Bold)
                         Text("✓ Version Name: ${report.versionName}", color = TextPrimary)
                         Text("✓ Version Code: ${report.versionCode}", color = TextPrimary)
                         Text("✓ Minimum SDK: ${report.minimumAndroidLabel}", color = NeonCyan)

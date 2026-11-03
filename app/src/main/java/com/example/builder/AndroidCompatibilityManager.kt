@@ -6,6 +6,7 @@ import android.os.Build
 import com.example.data.StudioProjectEntity
 import java.io.File
 import java.util.Locale
+import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 
 data class AndroidSdkOption(
@@ -61,6 +62,12 @@ data class DeviceCompatibilityCheck(
     val failureReasons: List<String>
 )
 
+data class ApkValidationGateItem(
+    val titleEnglish: String,
+    val descriptionArabic: String,
+    val isPassed: Boolean
+)
+
 data class ApkDeepValidationResult(
     val isValid: Boolean,
     val isZipValid: Boolean,
@@ -69,10 +76,24 @@ data class ApkDeepValidationResult(
     val hasResourcesArsc: Boolean,
     val isResourcesArscUncompressed: Boolean,
     val isSignedWithCert: Boolean,
+    val hasV1Signature: Boolean = false,
+    val hasV2SignatureBlock: Boolean = false,
+    val isZipAligned4Bytes: Boolean = false,
+    val isResourcesPackageMatched: Boolean = false,
     val isPackageParserAccepted: Boolean,
     val isStandaloneFromStudio: Boolean,
+    val apkStructureValidationPassed: Boolean = false,
+    val manifestValidationPassed: Boolean = false,
+    val dexValidationPassed: Boolean = false,
+    val resourceValidationPassed: Boolean = false,
+    val packageNameValidationPassed: Boolean = false,
+    val signatureValidationPassed: Boolean = false,
+    val zipAlignmentValidationPassed: Boolean = false,
+    val sdkCompatibilityValidationPassed: Boolean = false,
+    val validationChecklist: List<ApkValidationGateItem> = emptyList(),
     val parsedAppName: String?,
     val parsedPackageName: String?,
+    val parsedResourcesPackageName: String? = null,
     val parsedVersionName: String?,
     val parsedVersionCode: Int?,
     val parsedMinSdk: Int?,
@@ -102,6 +123,8 @@ data class PreInstallApkInspectionReport(
     val apkSizeFormatted: String,
     val isSigned: Boolean,
     val signingStatus: String,
+    val isZipAligned: Boolean = false,
+    val validationChecklist: List<ApkValidationGateItem> = emptyList(),
     val isStandaloneFromStudio: Boolean,
     val isDeviceCompatible: Boolean,
     val canProceedWithInstall: Boolean,
@@ -165,11 +188,11 @@ object AndroidCompatibilityManager {
             fallbackNoteArabic = "يدعم API 21+ مع معالجة تلقائية لصلاحيات Runtime"
         ),
         LibraryCompatibilityRequirement(
-            libraryName = "Gradle & Android Packaging Engine (AXML + D8)",
+            libraryName = "Gradle & Android Packaging Engine (AXML + D8 + APK Sig v2)",
             version = "9.3.1 / 9.1.1",
             minRequiredSdk = 21,
             recommendedCompileSdk = 36,
-            fallbackNoteArabic = "يبني حزم APK مستقلة تماماً بدءاً من minSdk 21 حتى compileSdk 36"
+            fallbackNoteArabic = "يبني ويوقع حزم APK مستقلة تماماً (V1 + V2 + ZipAlign 4) بدءاً من minSdk 21 حتى compileSdk 36"
         )
     )
 
@@ -361,9 +384,15 @@ object AndroidCompatibilityManager {
     }
 
     /**
-     * Performs a deep binary and PackageManager validation on the generated `.apk` file,
-     * extracting the real App Name, Package Name, Version Name, Version Code, Min/Target SDKs,
-     * and verifying 100% separation from `HTML TO APK STUDIO`.
+     * Performs the mandatory 8-point `APK VALIDATION` gate on the generated `.apk` file:
+     * 1. APK Structure Validation
+     * 2. AndroidManifest Validation
+     * 3. DEX Validation
+     * 4. Resource Validation
+     * 5. Package Name Validation
+     * 6. Signature Validation (V1 + APK Signature Scheme v2)
+     * 7. ZIP Alignment Validation (4-byte alignment)
+     * 8. SDK Compatibility Validation
      */
     fun validateGeneratedApkFile(
         context: Context,
@@ -375,6 +404,16 @@ object AndroidCompatibilityManager {
     ): ApkDeepValidationResult {
         val errors = mutableListOf<String>()
         if (!apkFile.exists() || apkFile.length() < 256L) {
+            val failedChecklist = listOf(
+                ApkValidationGateItem("APK Structure Validation", "ملف APK غير موجود أو فارغ على وحدة التخزين", false),
+                ApkValidationGateItem("AndroidManifest Validation", "تعذر قراءة AndroidManifest.xml", false),
+                ApkValidationGateItem("DEX Validation", "تعذر قراءة classes.dex", false),
+                ApkValidationGateItem("Resource Validation", "تعذر قراءة resources.arsc", false),
+                ApkValidationGateItem("Package Name Validation", "تعذر التحقق من Package Name", false),
+                ApkValidationGateItem("Signature Validation", "تعذر التحقق من التوقيع الرقمي V1/V2", false),
+                ApkValidationGateItem("ZIP Alignment Validation", "تعذر التحقق من محاذاة ZipAlign", false),
+                ApkValidationGateItem("SDK Compatibility Validation", "تعذر التحقق من توافق SDK", false)
+            )
             return ApkDeepValidationResult(
                 isValid = false,
                 isZipValid = false,
@@ -385,6 +424,7 @@ object AndroidCompatibilityManager {
                 isSignedWithCert = false,
                 isPackageParserAccepted = false,
                 isStandaloneFromStudio = false,
+                validationChecklist = failedChecklist,
                 parsedAppName = null,
                 parsedPackageName = null,
                 parsedVersionName = null,
@@ -401,11 +441,13 @@ object AndroidCompatibilityManager {
         var isZipValid = false
         var hasBinaryManifest = false
         var hasClassesDex = false
+        var hasStandaloneActivityInDex = false
+        var hasZeroStudioClassesInDex = true
         var hasResourcesArsc = false
         var isResourcesArscUncompressed = true
-        var hasManifestMf = false
-        var hasCertSf = false
-        var hasCertRsa = false
+        var resourcesArscPkgName: String? = null
+        var hasValidIconPng = false
+        var hasIndexHtmlAsset = false
         var manifestInspect: BinaryManifestAndZipAligner.ManifestInspectResult? = null
         val abisFound = mutableSetOf<String>()
 
@@ -421,25 +463,42 @@ object AndroidCompatibilityManager {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
                             val inspect = BinaryManifestAndZipAligner.inspectBinaryManifest(bytes)
                             manifestInspect = inspect
-                            hasBinaryManifest = inspect.isBinaryAxml
+                            hasBinaryManifest = inspect.isBinaryAxml && inspect.areAttributesSortedByResId
                         }
                         name == "classes.dex" -> {
-                            val header = ByteArray(4)
-                            val read = zip.getInputStream(entry).use { it.read(header) }
-                            if (read == 4 && String(header, Charsets.US_ASCII) == "dex\n") {
+                            val dexBytes = zip.getInputStream(entry).use { it.readBytes() }
+                            if (dexBytes.size > 112 && String(dexBytes, 0, 4, Charsets.US_ASCII) == "dex\n") {
                                 hasClassesDex = true
+                                val dexAscii = String(dexBytes, Charsets.ISO_8859_1)
+                                hasStandaloneActivityInDex = dexAscii.contains("Lcom/standalone/runtime/StandaloneMainActivity;")
+                                hasZeroStudioClassesInDex = !dexAscii.contains("StudioViewModel")
                             }
                         }
                         name == "resources.arsc" -> {
                             hasResourcesArsc = true
-                            if (entry.method != java.util.zip.ZipEntry.STORED) {
+                            if (entry.method != ZipEntry.STORED) {
                                 isResourcesArscUncompressed = false
                             }
+                            val arscBytes = zip.getInputStream(entry).use { it.readBytes() }
+                            resourcesArscPkgName = BinaryManifestAndZipAligner.extractResourcesArscPackageName(arscBytes)
                         }
-                        name.equals("META-INF/MANIFEST.MF", ignoreCase = true) -> hasManifestMf = true
-                        name.startsWith("META-INF/", ignoreCase = true) && name.endsWith(".SF", ignoreCase = true) -> hasCertSf = true
-                        name.startsWith("META-INF/", ignoreCase = true) &&
-                            (name.endsWith(".RSA", ignoreCase = true) || name.endsWith(".DSA", ignoreCase = true) || name.endsWith(".EC", ignoreCase = true)) -> hasCertRsa = true
+                        name == "res/drawable/ic_launcher.png" -> {
+                            val iconBytes = zip.getInputStream(entry).use { it.readBytes() }
+                            if (iconBytes.size > 32 &&
+                                iconBytes[0] == 0x89.toByte() &&
+                                iconBytes[1] == 0x50.toByte() &&
+                                iconBytes[2] == 0x4E.toByte() &&
+                                iconBytes[3] == 0x47.toByte()
+                            ) {
+                                hasValidIconPng = true
+                            }
+                        }
+                        name == "assets/index.html" -> {
+                            val htmlBytes = zip.getInputStream(entry).use { it.readBytes() }
+                            if (htmlBytes.isNotEmpty()) {
+                                hasIndexHtmlAsset = true
+                            }
+                        }
                         name.startsWith("lib/") -> {
                             val parts = name.split("/")
                             if (parts.size >= 3) {
@@ -453,20 +512,12 @@ object AndroidCompatibilityManager {
             errors.add("تلف في بنية أرشيف ZIP: ${e.localizedMessage}")
         }
 
-        if (!hasBinaryManifest) {
-            errors.add("ملف AndroidManifest.xml غير صالح أو ليس بصيغة Binary AXML المترجمة.")
-        }
-        if (!hasClassesDex) {
-            errors.add("ملف الكود التنفيذي classes.dex مفقود أو تالف.")
-        }
-        if (hasResourcesArsc && !isResourcesArscUncompressed) {
-            errors.add("ملف resources.arsc مضغوط (DEFLATED) مما يسبب فشل تحليل الحزمة على Android 11+.")
-        }
+        // Verify V1 + V2 Signatures
+        val sigSummary = RealApkSignerEngine.verifyApkSignatureV1AndV2(apkFile)
+        val isSigned = sigSummary.isValid
 
-        val isSigned = hasManifestMf && hasCertSf && hasCertRsa
-        if (!isSigned) {
-            errors.add("توقيع APK الرقمي (META-INF/CERT.RSA & CERT.SF) مفقود.")
-        }
+        // Verify 4-byte ZipAlign
+        val (isZipAligned, misalignedList) = BinaryManifestAndZipAligner.verifyZipAlignment(apkFile)
 
         var isPackageParserAccepted = false
         var parsedPkg: String? = manifestInspect?.packageNameFound
@@ -513,8 +564,7 @@ object AndroidCompatibilityManager {
             }
         }
 
-        // CRITICAL IDENTITY & INDEPENDENCE CHECK:
-        // Verify that the generated APK does NOT carry the Studio's package name or app name!
+        // CRITICAL IDENTITY & INDEPENDENCE CHECK
         val hostPkg = context.packageName
         val isForbiddenPkg = parsedPkg.isNullOrBlank() ||
             parsedPkg.equals(hostPkg, ignoreCase = true) ||
@@ -523,36 +573,141 @@ object AndroidCompatibilityManager {
         val isForbiddenLabel = parsedAppName.equals("HTML TO APK STUDIO", ignoreCase = true)
         val isStandaloneFromStudio = !isForbiddenPkg && !isForbiddenLabel
 
-        if (isForbiddenPkg) {
-            errors.add("خطأ حرج: ملف APK الناتج يحمل معرف الحزمة ($parsedPkg) المطابق لتطبيق HTML TO APK STUDIO! تم حظر البناء والتثبيت لمنع استبدال تطبيق الاستوديو.")
+        val isResourcesPkgMatched = !resourcesArscPkgName.isNullOrBlank() &&
+            resourcesArscPkgName.equals(parsedPkg, ignoreCase = true)
+
+        val actualMinSdk = manifestInspect?.minSdkFound ?: expectedMinSdk
+        val actualTargetSdk = manifestInspect?.targetSdkFound ?: expectedTargetSdk
+        val isSdkValid = actualMinSdk in 21..35 &&
+            actualTargetSdk in actualMinSdk..36 &&
+            Build.VERSION.SDK_INT >= actualMinSdk
+
+        // Evaluate the 8 mandatory APK VALIDATION checks
+        val apkStructurePassed = isZipValid && hasBinaryManifest && hasClassesDex && hasResourcesArsc && hasValidIconPng && hasIndexHtmlAsset
+        val manifestPassed = hasBinaryManifest &&
+            manifestInspect?.areAttributesSortedByResId == true &&
+            !parsedPkg.isNullOrBlank() &&
+            !parsedAppName.isNullOrBlank() &&
+            manifestInspect?.launcherActivityFound == BinaryManifestAndZipAligner.STANDALONE_MAIN_ACTIVITY_CLASS
+        val dexPassed = hasClassesDex && hasStandaloneActivityInDex && hasZeroStudioClassesInDex
+        val resourcePassed = hasResourcesArsc && isResourcesArscUncompressed && hasValidIconPng && isResourcesPkgMatched
+        val packageNamePassed = isStandaloneFromStudio &&
+            (expectedPackageName.isNullOrBlank() || parsedPkg.equals(expectedPackageName, ignoreCase = true)) &&
+            (expectedAppName.isNullOrBlank() || parsedAppName.equals(expectedAppName, ignoreCase = true))
+        val signaturePassed = sigSummary.hasV1Signature && sigSummary.hasV2SignatureBlock
+        val zipAlignmentPassed = isZipAligned
+        val sdkCompatibilityPassed = isSdkValid
+
+        if (!apkStructurePassed) {
+            errors.add("فشل فحص بنية APK (APK Structure Validation): تأكد من وجود AndroidManifest.xml وclasses.dex وresources.arsc وassets/index.html.")
         }
-        if (isForbiddenLabel) {
-            errors.add("خطأ حرج: ملف APK الناتج يحمل اسم HTML TO APK STUDIO بدلاً من اسم التطبيق الجديد المستقل.")
+        if (!manifestPassed) {
+            errors.add("فشل فحص AndroidManifest.xml: يجب أن يكون بصيغة Binary AXML المترجمة ومرتب السمات حسب معرفات الموارد.")
         }
-        if (!expectedPackageName.isNullOrBlank() && !parsedPkg.equals(expectedPackageName, ignoreCase = true)) {
-            errors.add("عدم تطابق Package Name داخل APK ($parsedPkg) مع الحزمة المطلوبة ($expectedPackageName).")
+        if (!dexPassed) {
+            errors.add("فشل فحص الكود التنفيذي (DEX Validation): ملف classes.dex غير صالح أو يفتقد لنشاط التشغيل المستقل.")
         }
-        if (!expectedAppName.isNullOrBlank() && !parsedAppName.equals(expectedAppName, ignoreCase = true)) {
-            errors.add("عدم تطابق اسم التطبيق داخل APK ($parsedAppName) مع الاسم المطلوب ($expectedAppName).")
+        if (!resourcePassed) {
+            errors.add("فشل فحص الموارد (Resource Validation): تأكد من أن resources.arsc غير مضغوط (STORED) ومطابق لمعرف الحزمة ($resourcesArscPkgName vs $parsedPkg).")
+        }
+        if (!packageNamePassed) {
+            errors.add("فشل فحص معرف الحزمة (Package Name Validation): الحزمة ($parsedPkg) غير صالحة أو غير مطابقة للمطلوب.")
+        }
+        if (!signaturePassed) {
+            errors.add("فشل فحص التوقيع الرقمي (Signature Validation): ${sigSummary.details}")
+        }
+        if (!zipAlignmentPassed) {
+            errors.add("فشل فحص محاذاة الحزمة (ZIP Alignment Validation): ملفات غير محاذاة على 4-byte: ${misalignedList.joinToString(", ")}")
+        }
+        if (!sdkCompatibilityPassed) {
+            errors.add("فشل فحص توافق SDK (SDK Compatibility Validation): minSdk=$actualMinSdk, targetSdk=$actualTargetSdk.")
         }
 
+        val checklist = listOf(
+            ApkValidationGateItem(
+                titleEnglish = "APK Structure Validation",
+                descriptionArabic = if (apkStructurePassed) "بنية أرشيف APK وملفات الويب والموارد مكتملة وسليمة" else "نقص أو تلف في بنية أرشيف APK",
+                isPassed = apkStructurePassed
+            ),
+            ApkValidationGateItem(
+                titleEnglish = "AndroidManifest Validation",
+                descriptionArabic = if (manifestPassed) "ملف AndroidManifest.xml مترجم بصيغة Binary AXML ومرتب السمات" else "خلل في Binary AndroidManifest.xml",
+                isPassed = manifestPassed
+            ),
+            ApkValidationGateItem(
+                titleEnglish = "DEX Validation",
+                descriptionArabic = if (dexPassed) "ملف classes.dex صالح ومترجم لـ API 21+ بمعزل عن الاستوديو" else "خلل في ملف classes.dex التنفيذي",
+                isPassed = dexPassed
+            ),
+            ApkValidationGateItem(
+                titleEnglish = "Resource Validation",
+                descriptionArabic = if (resourcePassed) "جدول resources.arsc (STORED) متطابق مع $parsedPkg وأيقونة PNG سليمة" else "خلل في جدول الموارد resources.arsc أو الأيقونة",
+                isPassed = resourcePassed
+            ),
+            ApkValidationGateItem(
+                titleEnglish = "Package Name Validation",
+                descriptionArabic = if (packageNamePassed) "معرف الحزمة ($parsedPkg) مستقل تماماً وصالح" else "خلل أو تعارض في معرف الحزمة ($parsedPkg)",
+                isPassed = packageNamePassed
+            ),
+            ApkValidationGateItem(
+                titleEnglish = "Signature Validation",
+                descriptionArabic = if (signaturePassed) "موقع رقمياً بنجاح عبر V1 (JAR) + V2 (APK Sig Block 42)" else "توقيع رقمي غير مكتمل (${sigSummary.details})",
+                isPassed = signaturePassed
+            ),
+            ApkValidationGateItem(
+                titleEnglish = "ZIP Alignment Validation",
+                descriptionArabic = if (zipAlignmentPassed) "محاذاة 4-Byte ZipAlign مكتملة لجميع ملفات الموارد غير المضغوطة" else "فشل محاذاة ZipAlign 4-Byte",
+                isPassed = zipAlignmentPassed
+            ),
+            ApkValidationGateItem(
+                titleEnglish = "SDK Compatibility Validation",
+                descriptionArabic = if (sdkCompatibilityPassed) "متوافق مع الأجهزة (minSdk=$actualMinSdk, targetSdk=$actualTargetSdk)" else "عدم توافق إعدادات SDK",
+                isPassed = sdkCompatibilityPassed
+            )
+        )
+
+        val allChecksPassed = apkStructurePassed &&
+            manifestPassed &&
+            dexPassed &&
+            resourcePassed &&
+            packageNamePassed &&
+            signaturePassed &&
+            zipAlignmentPassed &&
+            sdkCompatibilityPassed &&
+            isPackageParserAccepted &&
+            errors.isEmpty()
+
         return ApkDeepValidationResult(
-            isValid = errors.isEmpty() && isZipValid && hasBinaryManifest && hasClassesDex && isSigned && isPackageParserAccepted && isStandaloneFromStudio,
+            isValid = allChecksPassed,
             isZipValid = isZipValid,
             hasBinaryManifest = hasBinaryManifest,
             hasClassesDex = hasClassesDex,
             hasResourcesArsc = hasResourcesArsc,
             isResourcesArscUncompressed = isResourcesArscUncompressed,
-            isSignedWithCert = isSigned,
+            isSignedWithCert = signaturePassed,
+            hasV1Signature = sigSummary.hasV1Signature,
+            hasV2SignatureBlock = sigSummary.hasV2SignatureBlock,
+            isZipAligned4Bytes = zipAlignmentPassed,
+            isResourcesPackageMatched = isResourcesPkgMatched,
             isPackageParserAccepted = isPackageParserAccepted,
             isStandaloneFromStudio = isStandaloneFromStudio,
+            apkStructureValidationPassed = apkStructurePassed,
+            manifestValidationPassed = manifestPassed,
+            dexValidationPassed = dexPassed,
+            resourceValidationPassed = resourcePassed,
+            packageNameValidationPassed = packageNamePassed,
+            signatureValidationPassed = signaturePassed,
+            zipAlignmentValidationPassed = zipAlignmentPassed,
+            sdkCompatibilityValidationPassed = sdkCompatibilityPassed,
+            validationChecklist = checklist,
             parsedAppName = parsedAppName,
             parsedPackageName = parsedPkg,
+            parsedResourcesPackageName = resourcesArscPkgName,
             parsedVersionName = parsedVerName,
             parsedVersionCode = parsedVerCode,
-            parsedMinSdk = manifestInspect?.minSdkFound ?: expectedMinSdk,
-            parsedTargetSdk = manifestInspect?.targetSdkFound ?: expectedTargetSdk,
-            parsedCompileSdk = manifestInspect?.compileSdkFound ?: expectedTargetSdk,
+            parsedMinSdk = actualMinSdk,
+            parsedTargetSdk = actualTargetSdk,
+            parsedCompileSdk = manifestInspect?.compileSdkFound ?: actualTargetSdk,
             launcherActivityName = manifestInspect?.launcherActivityFound,
             detectedAbis = if (abisFound.isEmpty()) listOf("Universal (Standalone DEX)") else abisFound.toList(),
             validationErrors = errors
@@ -562,7 +717,7 @@ object AndroidCompatibilityManager {
     /**
      * Inspects the generated `.apk` file directly before installation so the user can see the
      * REAL extracted App Name, Package Name, Version Name, Version Code, Min/Target SDK, Size,
-     * and Signing Status — blocking installation immediately if the APK matches `HTML TO APK STUDIO`.
+     * Signing Status, and all 8 `APK VALIDATION` checks — blocking installation if any check fails.
      */
     fun inspectApkFileBeforeInstall(
         context: Context,
@@ -583,6 +738,8 @@ object AndroidCompatibilityManager {
                 apkSizeFormatted = "0 KB",
                 isSigned = false,
                 signingStatus = "✗ غير موقع",
+                isZipAligned = false,
+                validationChecklist = emptyList(),
                 isStandaloneFromStudio = false,
                 isDeviceCompatible = false,
                 canProceedWithInstall = false,
@@ -635,8 +792,14 @@ object AndroidCompatibilityManager {
             extractedCompileSdk = compileSdk,
             apkSizeBytes = sizeBytes,
             apkSizeFormatted = sizeFormatted,
-            isSigned = validation.isSignedWithCert,
-            signingStatus = if (validation.isSignedWithCert) "✓ موقع رقمياً (RSA-2048 • SHA-256)" else "✗ غير موقع",
+            isSigned = validation.signatureValidationPassed,
+            signingStatus = if (validation.signatureValidationPassed) {
+                "✓ موقع رقمياً (V1 JAR + APK Signature Scheme v2 • RSA-2048)"
+            } else {
+                "✗ التوقيع الرقمي غير مكتمل"
+            },
+            isZipAligned = validation.zipAlignmentValidationPassed,
+            validationChecklist = validation.validationChecklist,
             isStandaloneFromStudio = validation.isStandaloneFromStudio,
             isDeviceCompatible = deviceCheck.canInstallOnThisDevice,
             canProceedWithInstall = blockingError == null,
@@ -660,9 +823,9 @@ object AndroidCompatibilityManager {
         val isAbiCompatible = selectedArchitecture == "Universal APK" ||
             supportedAbis.any { it.equals(selectedArchitecture, ignoreCase = true) }
 
-        val isSigned = validationResult?.isSignedWithCert ?: true
+        val isSigned = validationResult?.signatureValidationPassed ?: true
         val isApkValid = validationResult?.isValid ?: true
-        val isManifestValid = validationResult?.hasBinaryManifest ?: true
+        val isManifestValid = validationResult?.manifestValidationPassed ?: true
         val isStandalone = validationResult?.isStandaloneFromStudio ?: true
 
         val reasons = mutableListOf<String>()
