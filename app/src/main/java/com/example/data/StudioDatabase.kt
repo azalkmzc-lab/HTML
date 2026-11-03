@@ -11,7 +11,7 @@ import androidx.room.RoomDatabase
         IptvChannelEntity::class,
         BuildLogEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class StudioDatabase : RoomDatabase() {

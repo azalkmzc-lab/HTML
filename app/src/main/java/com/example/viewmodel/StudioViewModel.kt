@@ -445,7 +445,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         accentColorHex: String,
         iconPreset: String,
         orientation: String,
-        permissionsCsv: String
+        permissionsCsv: String,
+        autoCompatibility: Boolean = true,
+        minSdk: Int = 21,
+        targetSdk: Int = 35,
+        compileSdk: Int = 35,
+        cpuArchitecture: String = "Universal APK",
+        buildSigningMode: String = "DEBUG"
     ) {
         val current = _activeProject.value ?: return
         val updated = current.copy(
@@ -459,12 +465,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             iconPreset = iconPreset,
             orientation = orientation,
             permissionsCsv = permissionsCsv,
+            autoCompatibility = autoCompatibility,
+            minSdk = minSdk,
+            targetSdk = targetSdk,
+            compileSdk = compileSdk,
+            cpuArchitecture = cpuArchitecture,
+            buildSigningMode = buildSigningMode,
             updatedAt = System.currentTimeMillis()
         )
         _activeProject.value = updated
         viewModelScope.launch {
             repository.updateProject(updated)
-            showStatus("تم حفظ إعدادات مشروع APK بنجاح.")
+            showStatus("تم حفظ إعدادات التوافق (minSdk=$minSdk, targetSdk=$targetSdk) وتوقيع APK بنجاح.")
         }
     }
 
@@ -530,20 +542,26 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     _activeProject.value = updatedProject
                     repository.updateProject(updatedProject)
 
+                    val det = progress.detailedReport
                     repository.recordBuildLog(
                         BuildLogEntity(
                             projectId = project.id,
                             projectName = project.name,
-                            packageName = project.packageName,
+                            packageName = det.packageName,
                             versionName = project.versionName,
                             versionCode = project.versionCode,
+                            minSdk = det.apkValidationResult.parsedMinSdk ?: project.minSdk,
+                            targetSdk = det.apkValidationResult.parsedTargetSdk ?: project.targetSdk,
+                            compileSdk = project.compileSdk,
+                            cpuArchitecture = project.cpuArchitecture,
+                            signingMode = project.buildSigningMode,
                             status = "SUCCESS",
                             apkFilePath = progress.outputApkFile.absolutePath,
                             sourceBundlePath = progress.outputSourceZipFile.absolutePath,
                             fileSizeBytes = progress.fileSizeBytes,
                             channelsBundled = channels.size,
                             buildDurationMs = progress.buildDurationMs,
-                            buildSummary = "تم بناء حزمة APK حقيقية مع مشغل Media3 ExoPlayer 1.5.1 (${channels.size} قناة) SHA-256: ${progress.sha256Signature.take(12)}"
+                            buildSummary = "✓ Signed (${project.buildSigningMode}) • MinSDK ${det.minimumAndroidLabel} • TargetSDK ${det.targetAndroidLabel} • ${project.cpuArchitecture} (${channels.size} قناة)"
                         )
                     )
                 }

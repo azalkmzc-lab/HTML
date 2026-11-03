@@ -434,9 +434,24 @@ fun HtmlToApkStudioRootApp(viewModel: StudioViewModel) {
                                                     project = proj,
                                                     channelsCount = activeChannels.size,
                                                     buildState = apkBuildState,
-                                                    onSaveMetadata = { name, pkg, verName, verCode, dev, primary, accent, icon, orient, perms ->
+                                                    onSaveMetadata = { name, pkg, verName, verCode, dev, primary, accent, icon, orient, perms, autoCompat, minSdk, targetSdk, compileSdk, arch, signingMode ->
                                                         viewModel.updateProjectMetadata(
-                                                            name, pkg, verName, verCode, dev, primary, accent, icon, orient, perms
+                                                            name = name,
+                                                            packageName = pkg,
+                                                            versionName = verName,
+                                                            versionCode = verCode,
+                                                            developerName = dev,
+                                                            primaryColorHex = primary,
+                                                            accentColorHex = accent,
+                                                            iconPreset = icon,
+                                                            orientation = orient,
+                                                            permissionsCsv = perms,
+                                                            autoCompatibility = autoCompat,
+                                                            minSdk = minSdk,
+                                                            targetSdk = targetSdk,
+                                                            compileSdk = compileSdk,
+                                                            cpuArchitecture = arch,
+                                                            buildSigningMode = signingMode
                                                         )
                                                     },
                                                     onStartRealApkBuild = { viewModel.startRealApkBuild() },

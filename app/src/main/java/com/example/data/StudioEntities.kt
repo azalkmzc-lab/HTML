@@ -16,6 +16,13 @@ data class StudioProjectEntity(
     val iconPreset: String = "LIVE_TV", // LIVE_TV, MOVIE_HUB, WEB_APP, GAME_PAD, MUSIC_WAVE
     val orientation: String = "AUTO", // AUTO, PORTRAIT, LANDSCAPE
     val permissionsCsv: String = "INTERNET,ACCESS_NETWORK_STATE,WAKE_LOCK",
+    // Android SDK Compatibility & Architecture & Signing Configuration
+    val autoCompatibility: Boolean = true,
+    val minSdk: Int = 21,       // Android 5.0 (API 21) by default for maximum compatibility
+    val targetSdk: Int = 35,    // Android 15 (API 35)
+    val compileSdk: Int = 35,   // Android 15 (API 35)
+    val cpuArchitecture: String = "Universal APK", // Universal APK, arm64-v8a, armeabi-v7a, x86, x86_64
+    val buildSigningMode: String = "DEBUG", // DEBUG, RELEASE
     val htmlCode: String,
     val cssCode: String = "",
     val jsCode: String = "",
@@ -56,6 +63,11 @@ data class BuildLogEntity(
     val packageName: String,
     val versionName: String,
     val versionCode: Int,
+    val minSdk: Int = 21,
+    val targetSdk: Int = 35,
+    val compileSdk: Int = 35,
+    val cpuArchitecture: String = "Universal APK",
+    val signingMode: String = "DEBUG",
     val status: String, // SUCCESS, FAILED
     val apkFilePath: String,
     val sourceBundlePath: String,
