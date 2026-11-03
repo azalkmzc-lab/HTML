@@ -1,0 +1,6 @@
+{
+  "name": "HTML TO APK STUDIO",
+  "description": "استوديو متكامل لتحويل أكواد HTML وCSS وJavaScript وتطبيقات IPTV إلى تطبيقات Android أصلية بصيغة APK مع مشغل Media3 ExoPlayer وتحليل ذكي للأكواد.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">HTML TO APK STUDIO</string>
+    <string name="studio_subtitle">بيئة متكاملة لتحويل HTML وIPTV إلى تطبيقات Android APK أصلية</string>
+    <string name="new_project">إنشاء مشروع جديد</string>
+    <string name="paste_html">لصق كود HTML</string>
+    <string name="import_html">استيراد ملف HTML</string>
+    <string name="recent_projects">مشاريعي السابقة</string>
+    <string name="saved_projects">المشاريع المحفوظة</string>
+    <string name="build_history">سجل التحويل والبناء</string>
+    <string name="settings">إعدادات التطبيق</string>
+    <string name="editor_tab">محرر الأكواد</string>
+    <string name="ai_analyzer_tab">المحلل الذكي AI</string>
+    <string name="iptv_studio_tab">نظام IPTV</string>
+    <string name="native_player_tab">مشغل Media3</string>
+    <string name="apk_builder_tab">بناء APK</string>
+    <string name="live_preview_tab">المعاينة المباشرة</string>
+</resources>

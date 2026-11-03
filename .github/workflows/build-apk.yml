@@ -1,0 +1,92 @@
+name: Build Debug APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Verify Java environment
+        run: |
+          java -version
+          echo "JAVA_HOME=${JAVA_HOME}"
+          JAVA_MAJOR=$(java -version 2>&1 | awk -F '[\"_.]' '/version/ {if ($2 == "1") print $3; else print $2}')
+          echo "Detected Java major version: ${JAVA_MAJOR}"
+          if [ -z "${JAVA_MAJOR}" ] || [ "${JAVA_MAJOR}" -lt 17 ]; then
+            echo "Error: Active Java major version (${JAVA_MAJOR:-unknown}) is lower than 17." >&2
+            exit 1
+          fi
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Create temporary debug keystore
+        run: |
+          if [ ! -f "./debug.keystore" ]; then
+            echo "Generating temporary ./debug.keystore..."
+            keytool -genkeypair -v \
+              -keystore ./debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+          else
+            echo "./debug.keystore already exists."
+          fi
+
+          if [ ! -f "./debug.keystore" ]; then
+            echo "Error: Failed to create ./debug.keystore." >&2
+            exit 1
+          fi
+
+      - name: Build debug APK
+        working-directory: ${{ github.workspace }}
+        run: gradle :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Verify debug APK output
+        run: |
+          EXPECTED_APK="app/build/outputs/apk/debug/app-debug.apk"
+          if [ -f "${EXPECTED_APK}" ]; then
+            echo "Verified debug APK exists at: ${EXPECTED_APK}"
+          else
+            echo "Expected APK not found at ${EXPECTED_APK}. Searching inside app/build/outputs/apk..."
+            if [ -d "app/build/outputs/apk" ]; then
+              FOUND_APKS=$(find app/build/outputs/apk -type f -name "*.apk" || true)
+              if [ -n "${FOUND_APKS}" ]; then
+                echo "Discovered APK paths:"
+                echo "${FOUND_APKS}"
+              else
+                echo "No APK files found inside app/build/outputs/apk."
+              fi
+            else
+              echo "Directory app/build/outputs/apk does not exist."
+            fi
+            echo "Error: Expected debug APK (${EXPECTED_APK}) is missing." >&2
+            exit 1
+          fi
+
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
