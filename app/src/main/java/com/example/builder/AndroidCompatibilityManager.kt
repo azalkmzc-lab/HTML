@@ -3,7 +3,9 @@ package com.example.builder
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import com.example.data.StudioProjectEntity
 import java.io.File
+import java.util.Locale
 import java.util.zip.ZipFile
 
 data class AndroidSdkOption(
@@ -68,17 +70,54 @@ data class ApkDeepValidationResult(
     val isResourcesArscUncompressed: Boolean,
     val isSignedWithCert: Boolean,
     val isPackageParserAccepted: Boolean,
+    val isStandaloneFromStudio: Boolean,
+    val parsedAppName: String?,
     val parsedPackageName: String?,
+    val parsedVersionName: String?,
     val parsedVersionCode: Int?,
     val parsedMinSdk: Int?,
     val parsedTargetSdk: Int?,
+    val parsedCompileSdk: Int?,
+    val launcherActivityName: String?,
     val detectedAbis: List<String>,
     val validationErrors: List<String>
+)
+
+data class PackageValidationResult(
+    val isValid: Boolean,
+    val sanitizedPackageName: String,
+    val errorMessageArabic: String?
+)
+
+data class PreInstallApkInspectionReport(
+    val apkFileExists: Boolean,
+    val extractedAppName: String,
+    val extractedPackageName: String,
+    val extractedVersionName: String,
+    val extractedVersionCode: Int,
+    val extractedMinSdk: Int,
+    val extractedTargetSdk: Int,
+    val extractedCompileSdk: Int,
+    val apkSizeBytes: Long,
+    val apkSizeFormatted: String,
+    val isSigned: Boolean,
+    val signingStatus: String,
+    val isStandaloneFromStudio: Boolean,
+    val isDeviceCompatible: Boolean,
+    val canProceedWithInstall: Boolean,
+    val blockingErrorArabic: String?
 )
 
 object AndroidCompatibilityManager {
 
     const val AVAILABLE_BACKEND_MAX_SDK = 36
+
+    val FORBIDDEN_STUDIO_PACKAGES = setOf(
+        "com.aistudio.htmltoapkstudio.vqxkmp",
+        "com.htmlapk.studio",
+        "com.example",
+        "com.example.htmltoapkstudio"
+    )
 
     val SUPPORTED_SDK_OPTIONS = listOf(
         AndroidSdkOption(21, "Android 5.0", "Lollipop", "LEGACY"),
@@ -105,39 +144,32 @@ object AndroidCompatibilityManager {
 
     val PROJECT_LIBRARIES = listOf(
         LibraryCompatibilityRequirement(
-            libraryName = "AndroidX Media3 ExoPlayer",
+            libraryName = "Standalone Android WebView & Native Video Runtime",
+            version = "1.5.1",
+            minRequiredSdk = 21,
+            recommendedCompileSdk = 35,
+            fallbackNoteArabic = "مشغل أندرويد مستقل يدعم API 21+ بالكامل مع توافق HLS/M3U8/MP4"
+        ),
+        LibraryCompatibilityRequirement(
+            libraryName = "AndroidX Media3 ExoPlayer Bridge",
             version = "1.5.1",
             minRequiredSdk = 21,
             recommendedCompileSdk = 35,
             fallbackNoteArabic = "يدعم API 21+ بالكامل مع توافق HLS/DASH/MP4"
         ),
         LibraryCompatibilityRequirement(
-            libraryName = "AndroidX Core KTX & Activity",
+            libraryName = "AndroidX Core & Activity",
             version = "1.15.0 / 1.10.0",
             minRequiredSdk = 21,
             recommendedCompileSdk = 35,
             fallbackNoteArabic = "يدعم API 21+ مع معالجة تلقائية لصلاحيات Runtime"
         ),
         LibraryCompatibilityRequirement(
-            libraryName = "Jetpack Compose UI & Material 3",
-            version = "2024.09.00",
-            minRequiredSdk = 21,
-            recommendedCompileSdk = 35,
-            fallbackNoteArabic = "يدعم API 21+ (الألوان الديناميكية تعمل على API 31+ مع بدائل تلقائية للأقدم)"
-        ),
-        LibraryCompatibilityRequirement(
-            libraryName = "Kotlin Coroutines & Stdlib",
-            version = "2.2.10 / 1.10.2",
-            minRequiredSdk = 21,
-            recommendedCompileSdk = 35,
-            fallbackNoteArabic = "متوافق مع جميع إصدارات أندرويد 5.0+"
-        ),
-        LibraryCompatibilityRequirement(
-            libraryName = "Gradle & Android Gradle Plugin (AGP)",
+            libraryName = "Gradle & Android Packaging Engine (AXML + D8)",
             version = "9.3.1 / 9.1.1",
             minRequiredSdk = 21,
             recommendedCompileSdk = 36,
-            fallbackNoteArabic = "يدعم بناء حزم APK بدءاً من minSdk 21 حتى compileSdk 36"
+            fallbackNoteArabic = "يبني حزم APK مستقلة تماماً بدءاً من minSdk 21 حتى compileSdk 36"
         )
     )
 
@@ -151,23 +183,124 @@ object AndroidCompatibilityManager {
     }
 
     /**
-     * Computes optimal SDK values when "التوافق التلقائي" (Auto Compatibility) is enabled
-     * or when the user selects a compatibility tier preset.
+     * Automatically generates a clean, valid, and unique Android `packageName` from the project's
+     * `appName` and ensures it never collides with `HTML TO APK STUDIO` or any other saved project.
      */
+    fun generateUniquePackageName(
+        appName: String,
+        existingPackages: Collection<String> = emptyList(),
+        studioPackageName: String = "com.aistudio.htmltoapkstudio.vqxkmp"
+    ): String {
+        val normalized = appName.trim().lowercase(Locale.US)
+        val forbidden = FORBIDDEN_STUDIO_PACKAGES + studioPackageName.lowercase(Locale.US) +
+            existingPackages.map { it.trim().lowercase(Locale.US) }
+
+        val baseCandidate = when {
+            normalized == "xtv" || normalized.startsWith("xtv ") -> "com.xtv.live"
+            normalized == "sport" || normalized.startsWith("sport ") -> "com.sport.live"
+            normalized == "movies" || normalized.startsWith("movies ") -> "com.movies.player"
+            else -> {
+                val asciiSlug = normalized
+                    .replace(Regex("[^a-z0-9]"), "")
+                    .let { s ->
+                        if (s.isBlank()) {
+                            "app${kotlin.math.abs(appName.hashCode()) % 10000}"
+                        } else if (s.first().isDigit()) {
+                            "app$s"
+                        } else {
+                            s.take(18)
+                        }
+                    }
+                "com.$asciiSlug.live"
+            }
+        }
+
+        if (baseCandidate !in forbidden) {
+            return baseCandidate
+        }
+
+        var counter = 2
+        while (true) {
+            val parts = baseCandidate.split(".")
+            val candidate = if (parts.size >= 3) {
+                "${parts[0]}.${parts[1]}$counter.${parts.last()}"
+            } else {
+                "$baseCandidate.v$counter"
+            }
+            if (candidate.lowercase(Locale.US) !in forbidden) {
+                return candidate
+            }
+            counter++
+        }
+    }
+
+    /**
+     * Validates that a project's `packageName` is syntactically valid, completely independent from
+     * `HTML TO APK STUDIO`, and not duplicated across other projects.
+     */
+    fun validatePackageNameIndependence(
+        rawPackageName: String,
+        appName: String,
+        currentProjectId: Long = 0L,
+        allProjects: List<StudioProjectEntity> = emptyList(),
+        studioPackageName: String = "com.aistudio.htmltoapkstudio.vqxkmp"
+    ): PackageValidationResult {
+        val trimmed = rawPackageName.trim().lowercase(Locale.US)
+        if (trimmed.isBlank()) {
+            val generated = generateUniquePackageName(
+                appName = appName,
+                existingPackages = allProjects.filter { it.id != currentProjectId }.map { it.packageName },
+                studioPackageName = studioPackageName
+            )
+            return PackageValidationResult(
+                isValid = true,
+                sanitizedPackageName = generated,
+                errorMessageArabic = null
+            )
+        }
+
+        if (trimmed in FORBIDDEN_STUDIO_PACKAGES || trimmed.equals(studioPackageName, ignoreCase = true)) {
+            return PackageValidationResult(
+                isValid = false,
+                sanitizedPackageName = trimmed,
+                errorMessageArabic = "يُمنع استخدام Package Name الخاص بتطبيق HTML TO APK STUDIO ($trimmed). يجب أن يحصل التطبيق الجديد على Package Name مستقل مثل com.xtv.live"
+            )
+        }
+
+        val segments = trimmed.split(".")
+        if (segments.size < 2 || segments.any { it.isBlank() || !it.matches(Regex("^[a-z][a-z0-9_]*$")) }) {
+            return PackageValidationResult(
+                isValid = false,
+                sanitizedPackageName = trimmed,
+                errorMessageArabic = "صيغة Package Name غير صالحة ($trimmed). يجب أن يتكون من مقطعين أو أكثر بحروف إنجليزية صغيرة مثل com.xtv.live"
+            )
+        }
+
+        val duplicateProject = allProjects.firstOrNull {
+            it.id != currentProjectId && it.packageName.equals(trimmed, ignoreCase = true)
+        }
+        if (duplicateProject != null) {
+            return PackageValidationResult(
+                isValid = false,
+                sanitizedPackageName = trimmed,
+                errorMessageArabic = "معرف الحزمة ($trimmed) مستخدم بالفعل في مشروع آخر ('${duplicateProject.name}'). يجب أن يكون لكل تطبيق Package Name فريد ومستقل."
+            )
+        }
+
+        return PackageValidationResult(
+            isValid = true,
+            sanitizedPackageName = trimmed,
+            errorMessageArabic = null
+        )
+    }
+
     fun computeAutoCompatibilitySdks(deviceApi: Int = Build.VERSION.SDK_INT): Triple<Int, Int, Int> {
-        // minSdk = 21 (Android 5.0) for maximum device reach while supporting Media3 1.5.1
-        // targetSdk = 35 (Android 15) for modern Play/OS behavior without breaking older devices
-        // compileSdk = 35 (or 36 if device is API 36)
         val minSdk = 21
         val targetSdk = 35
         val compileSdk = if (deviceApi >= 36) 36 else 35
         return Triple(minSdk, targetSdk, compileSdk)
     }
 
-    /**
-     * Checks all project libraries against the user's selected `minSdk`, `targetSdk`, and `compileSdk`
-     * before allowing the build to start.
-     */
     fun verifyLibraryAndSdkCompatibility(
         selectedMinSdk: Int,
         selectedTargetSdk: Int,
@@ -228,14 +361,17 @@ object AndroidCompatibilityManager {
     }
 
     /**
-     * Performs a real binary and PackageManager validation on the generated `.apk` file
-     * before reporting build completion.
+     * Performs a deep binary and PackageManager validation on the generated `.apk` file,
+     * extracting the real App Name, Package Name, Version Name, Version Code, Min/Target SDKs,
+     * and verifying 100% separation from `HTML TO APK STUDIO`.
      */
     fun validateGeneratedApkFile(
         context: Context,
         apkFile: File,
         expectedMinSdk: Int,
-        expectedTargetSdk: Int
+        expectedTargetSdk: Int,
+        expectedPackageName: String? = null,
+        expectedAppName: String? = null
     ): ApkDeepValidationResult {
         val errors = mutableListOf<String>()
         if (!apkFile.exists() || apkFile.length() < 256L) {
@@ -248,10 +384,15 @@ object AndroidCompatibilityManager {
                 isResourcesArscUncompressed = false,
                 isSignedWithCert = false,
                 isPackageParserAccepted = false,
+                isStandaloneFromStudio = false,
+                parsedAppName = null,
                 parsedPackageName = null,
+                parsedVersionName = null,
                 parsedVersionCode = null,
                 parsedMinSdk = null,
                 parsedTargetSdk = null,
+                parsedCompileSdk = null,
+                launcherActivityName = null,
                 detectedAbis = emptyList(),
                 validationErrors = listOf("ملف APK غير موجود أو فارغ على وحدة التخزين.")
             )
@@ -291,7 +432,6 @@ object AndroidCompatibilityManager {
                         }
                         name == "resources.arsc" -> {
                             hasResourcesArsc = true
-                            // On Android 11+ (API 30+), resources.arsc MUST be STORED (method == 0)
                             if (entry.method != java.util.zip.ZipEntry.STORED) {
                                 isResourcesArscUncompressed = false
                             }
@@ -328,10 +468,12 @@ object AndroidCompatibilityManager {
             errors.add("توقيع APK الرقمي (META-INF/CERT.RSA & CERT.SF) مفقود.")
         }
 
-        // Verify with Android's native PackageManager.getPackageArchiveInfo!
         var isPackageParserAccepted = false
-        var parsedPkg: String? = null
+        var parsedPkg: String? = manifestInspect?.packageNameFound
+        var parsedAppName: String? = manifestInspect?.appNameFound
+        var parsedVerName: String? = manifestInspect?.versionNameFound
         var parsedVerCode: Int? = manifestInspect?.versionCodeFound
+
         try {
             val pm = context.packageManager
             @Suppress("DEPRECATION")
@@ -343,31 +485,59 @@ object AndroidCompatibilityManager {
             if (archiveInfo != null && !archiveInfo.packageName.isNullOrBlank()) {
                 isPackageParserAccepted = true
                 parsedPkg = archiveInfo.packageName
+                if (!archiveInfo.versionName.isNullOrBlank()) {
+                    parsedVerName = archiveInfo.versionName
+                }
                 parsedVerCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     archiveInfo.longVersionCode.toInt()
                 } else {
                     @Suppress("DEPRECATION")
                     archiveInfo.versionCode
                 }
+                val nonLocalizedLabel = archiveInfo.applicationInfo?.nonLocalizedLabel?.toString()
+                if (!nonLocalizedLabel.isNullOrBlank()) {
+                    parsedAppName = nonLocalizedLabel
+                }
             } else {
-                // In Robolectric/JVM unit tests getPackageArchiveInfo may return null if not mocked,
-                // so rely on binary AXML + DEX + Signature verification if packageName isn't returned.
-                if (hasBinaryManifest && hasClassesDex && isSigned) {
+                if (hasBinaryManifest && hasClassesDex && isSigned && !parsedPkg.isNullOrBlank()) {
                     isPackageParserAccepted = true
                 } else {
                     errors.add("رفض محلل حزم أندرويد (PackageParser) قراءة ملف APK.")
                 }
             }
         } catch (e: Exception) {
-            if (hasBinaryManifest && hasClassesDex && isSigned) {
+            if (hasBinaryManifest && hasClassesDex && isSigned && !parsedPkg.isNullOrBlank()) {
                 isPackageParserAccepted = true
             } else {
                 errors.add("خطأ أثناء فحص الحزمة بواسطة النظام: ${e.localizedMessage}")
             }
         }
 
+        // CRITICAL IDENTITY & INDEPENDENCE CHECK:
+        // Verify that the generated APK does NOT carry the Studio's package name or app name!
+        val hostPkg = context.packageName
+        val isForbiddenPkg = parsedPkg.isNullOrBlank() ||
+            parsedPkg.equals(hostPkg, ignoreCase = true) ||
+            FORBIDDEN_STUDIO_PACKAGES.any { it.equals(parsedPkg, ignoreCase = true) }
+
+        val isForbiddenLabel = parsedAppName.equals("HTML TO APK STUDIO", ignoreCase = true)
+        val isStandaloneFromStudio = !isForbiddenPkg && !isForbiddenLabel
+
+        if (isForbiddenPkg) {
+            errors.add("خطأ حرج: ملف APK الناتج يحمل معرف الحزمة ($parsedPkg) المطابق لتطبيق HTML TO APK STUDIO! تم حظر البناء والتثبيت لمنع استبدال تطبيق الاستوديو.")
+        }
+        if (isForbiddenLabel) {
+            errors.add("خطأ حرج: ملف APK الناتج يحمل اسم HTML TO APK STUDIO بدلاً من اسم التطبيق الجديد المستقل.")
+        }
+        if (!expectedPackageName.isNullOrBlank() && !parsedPkg.equals(expectedPackageName, ignoreCase = true)) {
+            errors.add("عدم تطابق Package Name داخل APK ($parsedPkg) مع الحزمة المطلوبة ($expectedPackageName).")
+        }
+        if (!expectedAppName.isNullOrBlank() && !parsedAppName.equals(expectedAppName, ignoreCase = true)) {
+            errors.add("عدم تطابق اسم التطبيق داخل APK ($parsedAppName) مع الاسم المطلوب ($expectedAppName).")
+        }
+
         return ApkDeepValidationResult(
-            isValid = errors.isEmpty() && isZipValid && hasBinaryManifest && hasClassesDex && isSigned && isPackageParserAccepted,
+            isValid = errors.isEmpty() && isZipValid && hasBinaryManifest && hasClassesDex && isSigned && isPackageParserAccepted && isStandaloneFromStudio,
             isZipValid = isZipValid,
             hasBinaryManifest = hasBinaryManifest,
             hasClassesDex = hasClassesDex,
@@ -375,19 +545,105 @@ object AndroidCompatibilityManager {
             isResourcesArscUncompressed = isResourcesArscUncompressed,
             isSignedWithCert = isSigned,
             isPackageParserAccepted = isPackageParserAccepted,
+            isStandaloneFromStudio = isStandaloneFromStudio,
+            parsedAppName = parsedAppName,
             parsedPackageName = parsedPkg,
+            parsedVersionName = parsedVerName,
             parsedVersionCode = parsedVerCode,
             parsedMinSdk = manifestInspect?.minSdkFound ?: expectedMinSdk,
             parsedTargetSdk = manifestInspect?.targetSdkFound ?: expectedTargetSdk,
-            detectedAbis = if (abisFound.isEmpty()) listOf("Universal (Java/DEX)") else abisFound.toList(),
+            parsedCompileSdk = manifestInspect?.compileSdkFound ?: expectedTargetSdk,
+            launcherActivityName = manifestInspect?.launcherActivityFound,
+            detectedAbis = if (abisFound.isEmpty()) listOf("Universal (Standalone DEX)") else abisFound.toList(),
             validationErrors = errors
         )
     }
 
     /**
-     * Evaluates the current Android device against the project's configured SDK & ABI settings
-     * and the validated APK file.
+     * Inspects the generated `.apk` file directly before installation so the user can see the
+     * REAL extracted App Name, Package Name, Version Name, Version Code, Min/Target SDK, Size,
+     * and Signing Status — blocking installation immediately if the APK matches `HTML TO APK STUDIO`.
      */
+    fun inspectApkFileBeforeInstall(
+        context: Context,
+        apkFile: File,
+        selectedArchitecture: String = "Universal APK"
+    ): PreInstallApkInspectionReport {
+        if (!apkFile.exists() || apkFile.length() < 256L) {
+            return PreInstallApkInspectionReport(
+                apkFileExists = false,
+                extractedAppName = "غير متوفر",
+                extractedPackageName = "غير متوفر",
+                extractedVersionName = "0.0.0",
+                extractedVersionCode = 0,
+                extractedMinSdk = 21,
+                extractedTargetSdk = 35,
+                extractedCompileSdk = 35,
+                apkSizeBytes = 0L,
+                apkSizeFormatted = "0 KB",
+                isSigned = false,
+                signingStatus = "✗ غير موقع",
+                isStandaloneFromStudio = false,
+                isDeviceCompatible = false,
+                canProceedWithInstall = false,
+                blockingErrorArabic = "ملف APK غير موجود على وحدة التخزين."
+            )
+        }
+
+        val validation = validateGeneratedApkFile(
+            context = context,
+            apkFile = apkFile,
+            expectedMinSdk = 21,
+            expectedTargetSdk = 35
+        )
+
+        val minSdk = validation.parsedMinSdk ?: 21
+        val targetSdk = validation.parsedTargetSdk ?: 35
+        val compileSdk = validation.parsedCompileSdk ?: 35
+
+        val deviceCheck = inspectCurrentDeviceCompatibility(
+            apkMinSdk = minSdk,
+            apkTargetSdk = targetSdk,
+            apkCompileSdk = compileSdk,
+            selectedArchitecture = selectedArchitecture,
+            validationResult = validation
+        )
+
+        val sizeBytes = apkFile.length()
+        val sizeFormatted = RealApkCompilerEngine.formatFileSize(sizeBytes)
+        val extractedPkg = validation.parsedPackageName ?: "غير معروف"
+        val extractedApp = validation.parsedAppName ?: "غير معروف"
+
+        val blockingError = when {
+            !validation.isStandaloneFromStudio ->
+                "تم حظر التثبيت: ملف APK يحمل Package Name ($extractedPkg) مطابقاً لبرنامج HTML TO APK STUDIO! يجب إعادة بناء المشروع بمعرف حزمة مستقل."
+            !validation.isValid ->
+                validation.validationErrors.joinToString("\n• ", prefix = "• ")
+            !deviceCheck.canInstallOnThisDevice ->
+                deviceCheck.failureReasons.joinToString("\n• ", prefix = "• ")
+            else -> null
+        }
+
+        return PreInstallApkInspectionReport(
+            apkFileExists = true,
+            extractedAppName = extractedApp,
+            extractedPackageName = extractedPkg,
+            extractedVersionName = validation.parsedVersionName ?: "1.0.0",
+            extractedVersionCode = validation.parsedVersionCode ?: 1,
+            extractedMinSdk = minSdk,
+            extractedTargetSdk = targetSdk,
+            extractedCompileSdk = compileSdk,
+            apkSizeBytes = sizeBytes,
+            apkSizeFormatted = sizeFormatted,
+            isSigned = validation.isSignedWithCert,
+            signingStatus = if (validation.isSignedWithCert) "✓ موقع رقمياً (RSA-2048 • SHA-256)" else "✗ غير موقع",
+            isStandaloneFromStudio = validation.isStandaloneFromStudio,
+            isDeviceCompatible = deviceCheck.canInstallOnThisDevice,
+            canProceedWithInstall = blockingError == null,
+            blockingErrorArabic = blockingError
+        )
+    }
+
     fun inspectCurrentDeviceCompatibility(
         apkMinSdk: Int,
         apkTargetSdk: Int,
@@ -407,8 +663,12 @@ object AndroidCompatibilityManager {
         val isSigned = validationResult?.isSignedWithCert ?: true
         val isApkValid = validationResult?.isValid ?: true
         val isManifestValid = validationResult?.hasBinaryManifest ?: true
+        val isStandalone = validationResult?.isStandaloneFromStudio ?: true
 
         val reasons = mutableListOf<String>()
+        if (!isStandalone) {
+            reasons.add("معرف الحزمة داخل APK مطابق لتطبيق الاستوديو؛ يجب استخدام Package Name مستقل.")
+        }
         if (!isSdkCompatible) {
             reasons.add(
                 "إصدار أندرويد في جهازك الحالي (API $deviceApi) أقدم من الحد الأدنى المطلوب للتطبيق (API $apkMinSdk - ${formatSdkWithAndroidName(apkMinSdk)}). يرجى تقليل Minimum SDK أو تفعيل التوافق التلقائي."
@@ -423,12 +683,12 @@ object AndroidCompatibilityManager {
             reasons.addAll(validationResult.validationErrors)
         }
 
-        val canInstall = isSdkCompatible && isAbiCompatible && isSigned && isApkValid && isManifestValid
+        val canInstall = isSdkCompatible && isAbiCompatible && isSigned && isApkValid && isManifestValid && isStandalone
 
         val statusSummary = if (canInstall) {
-            "✓ الجهاز متوافق تماماً مع التطبيق وجاهز للتثبيت"
+            "✓ تطبيق مستقل ومتوافق تماماً مع الجهاز وجاهز للتثبيت"
         } else {
-            "✗ الجهاز أو ملف APK غير متوافق حالياً (${reasons.firstOrNull() ?: "راجع التفاصيل"})"
+            "✗ لا يمكن التثبيت حالياً (${reasons.firstOrNull() ?: "راجع التفاصيل"})"
         }
 
         return DeviceCompatibilityCheck(
@@ -447,7 +707,7 @@ object AndroidCompatibilityManager {
             isBinaryManifestValid = isManifestValid,
             canInstallOnThisDevice = canInstall,
             statusSummaryArabic = statusSummary,
-            failureReasons = reasons
+            failureReasons = reasons.distinct()
         )
     }
 }

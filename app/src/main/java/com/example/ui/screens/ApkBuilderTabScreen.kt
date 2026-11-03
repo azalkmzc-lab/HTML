@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -33,6 +34,7 @@ import java.io.File
 @Composable
 fun ApkBuilderTabScreen(
     project: StudioProjectEntity,
+    allProjects: List<StudioProjectEntity> = emptyList(),
     channelsCount: Int,
     buildState: ApkBuildProgress?,
     onSaveMetadata: (
@@ -41,6 +43,7 @@ fun ApkBuilderTabScreen(
         verName: String,
         verCode: Int,
         dev: String,
+        appDesc: String,
         primaryHex: String,
         accentHex: String,
         iconPreset: String,
@@ -58,11 +61,13 @@ fun ApkBuilderTabScreen(
     onShareApk: (File, String) -> Unit,
     onSaveApkToPhone: (File) -> Unit
 ) {
+    val context = LocalContext.current
     var appName by remember(project.id) { mutableStateOf(project.name) }
     var packageName by remember(project.id) { mutableStateOf(project.packageName) }
     var versionName by remember(project.id) { mutableStateOf(project.versionName) }
     var versionCodeText by remember(project.id) { mutableStateOf(project.versionCode.toString()) }
     var developerName by remember(project.id) { mutableStateOf(project.developerName) }
+    var appDescription by remember(project.id) { mutableStateOf(project.appDescription) }
     var primaryColorHex by remember(project.id) { mutableStateOf(project.primaryColorHex) }
     var accentColorHex by remember(project.id) { mutableStateOf(project.accentColorHex) }
     var iconPreset by remember(project.id) { mutableStateOf(project.iconPreset) }
@@ -93,6 +98,16 @@ fun ApkBuilderTabScreen(
             selectedMinSdk = selectedMinSdk,
             selectedTargetSdk = selectedTargetSdk,
             selectedCompileSdk = selectedCompileSdk
+        )
+    }
+
+    val livePackageValidation = remember(packageName, appName, project.id, allProjects) {
+        AndroidCompatibilityManager.validatePackageNameIndependence(
+            rawPackageName = packageName,
+            appName = appName,
+            currentProjectId = project.id,
+            allProjects = allProjects,
+            studioPackageName = context.packageName
         )
     }
 
@@ -630,17 +645,43 @@ fun ApkBuilderTabScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "هوية التطبيق والأذونات (Manifest & Package Config)",
+                        text = "هوية التطبيق المستقل والأذونات (Independent App Identity & Package)",
                         style = MaterialTheme.typography.titleMedium,
                         color = NeonCyan,
                         fontWeight = FontWeight.Bold
                     )
 
+                    Surface(
+                        color = StudioSurfaceVariant,
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, EmeraldGreen.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "✓ نظام الفصل التام بين الاستوديو والتطبيق الناتج مفعل:",
+                                color = EmeraldGreen,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                            Text(
+                                text = "التطبيق الناتج ($appName) يُبنى من قالب Android مستقل بمعرف حزمة خاص (${livePackageValidation.sanitizedPackageName}) داخل المسار المعزول Projects/${appName.trim().ifBlank { "App" }}/output/ حتى يتم تثبيته بجانب HTML TO APK STUDIO وبقية تطبيقاتك دون أي تعارض.",
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedTextField(
                             value = appName,
-                            onValueChange = { appName = it },
-                            label = { Text("اسم التطبيق (App Name)") },
+                            onValueChange = { newName ->
+                                appName = newName
+                            },
+                            label = { Text("اسم التطبيق الجديد (App Name)") },
                             singleLine = true,
                             modifier = Modifier
                                 .weight(1f)
@@ -655,14 +696,78 @@ fun ApkBuilderTabScreen(
                         )
                     }
 
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = packageName,
+                            onValueChange = { packageName = it },
+                            label = { Text("معرف الحزمة المستقل (Package Name)") },
+                            singleLine = true,
+                            isError = !livePackageValidation.isValid,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("input_apk_package_name")
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                packageName = AndroidCompatibilityManager.generateUniquePackageName(
+                                    appName = appName,
+                                    existingPackages = allProjects.filter { it.id != project.id }.map { it.packageName },
+                                    studioPackageName = context.packageName
+                                )
+                            },
+                            modifier = Modifier.testTag("btn_auto_generate_package_name")
+                        ) {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = NeonCyan, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("توليد تلقائي", color = NeonCyan, fontSize = 12.sp)
+                        }
+                    }
+
+                    if (!livePackageValidation.isValid && livePackageValidation.errorMessageArabic != null) {
+                        Text(
+                            text = "✗ ${livePackageValidation.errorMessageArabic}",
+                            color = CrimsonError,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontSize = 12.sp
+                        )
+                    } else {
+                        Text(
+                            text = "✓ Package Name مستقل وصالح: ${livePackageValidation.sanitizedPackageName}",
+                            color = EmeraldGreen,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val quickExamples = listOf(
+                            "XTV" to "com.xtv.live",
+                            "SPORT" to "com.sport.live",
+                            "MOVIES" to "com.movies.player"
+                        )
+                        items(quickExamples) { (sampleTitle, samplePkg) ->
+                            AssistChip(
+                                onClick = {
+                                    appName = sampleTitle
+                                    packageName = samplePkg
+                                },
+                                label = { Text("$sampleTitle ($samplePkg)", fontSize = 11.sp) }
+                            )
+                        }
+                    }
+
                     OutlinedTextField(
-                        value = packageName,
-                        onValueChange = { packageName = it },
-                        label = { Text("معرف الحزمة (Package Name)") },
+                        value = appDescription,
+                        onValueChange = { appDescription = it },
+                        label = { Text("وصف التطبيق الجديد (App Description)") },
                         singleLine = true,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("input_apk_package_name")
+                            .testTag("input_apk_app_description")
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -770,10 +875,11 @@ fun ApkBuilderTabScreen(
                             onClick = {
                                 onSaveMetadata(
                                     appName,
-                                    packageName,
+                                    livePackageValidation.sanitizedPackageName,
                                     versionName,
                                     versionCodeText.toIntOrNull() ?: 1,
                                     developerName,
+                                    appDescription,
                                     primaryColorHex,
                                     accentColorHex,
                                     iconPreset,
@@ -787,6 +893,7 @@ fun ApkBuilderTabScreen(
                                     buildSigningMode
                                 )
                             },
+                            enabled = livePackageValidation.isValid,
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Save, contentDescription = null, tint = NeonCyan)
@@ -798,10 +905,11 @@ fun ApkBuilderTabScreen(
                             onClick = {
                                 onSaveMetadata(
                                     appName,
-                                    packageName,
+                                    livePackageValidation.sanitizedPackageName,
                                     versionName,
                                     versionCodeText.toIntOrNull() ?: 1,
                                     developerName,
+                                    appDescription,
                                     primaryColorHex,
                                     accentColorHex,
                                     iconPreset,
@@ -816,7 +924,7 @@ fun ApkBuilderTabScreen(
                                 )
                                 onStartRealApkBuild()
                             },
-                            enabled = liveLibraryReport.isAllCompatible,
+                            enabled = liveLibraryReport.isAllCompatible && livePackageValidation.isValid,
                             colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
                             modifier = Modifier
                                 .weight(1.3f)
@@ -825,7 +933,7 @@ fun ApkBuilderTabScreen(
                             Icon(Icons.Default.BuildCircle, contentDescription = null, tint = Color.Black)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (buildSigningMode == "RELEASE") "بناء وتوقيع Release APK" else "بناء وتوقيع Debug APK",
+                                text = if (buildSigningMode == "RELEASE") "بناء تطبيق مستقل (Release APK)" else "بناء تطبيق مستقل (Debug APK)",
                                 color = Color.Black,
                                 fontWeight = FontWeight.Bold
                             )
@@ -852,43 +960,62 @@ fun ApkBuilderTabScreen(
         }
     }
 
-    // Device Compatibility Check Modal Dialog Before Installing APK
+    // Real Pre-Install Binary APK Inspection Modal Dialog Before Installing APK
     val fileToInstall = showInstallPreCheckDialog
     if (fileToInstall != null) {
+        val preInstallInspection = remember(fileToInstall.absolutePath, fileToInstall.lastModified()) {
+            AndroidCompatibilityManager.inspectApkFileBeforeInstall(
+                context = context,
+                apkFile = fileToInstall,
+                selectedArchitecture = cpuArchitecture
+            )
+        }
+
         AlertDialog(
             onDismissRequest = { showInstallPreCheckDialog = null },
             containerColor = StudioSurface,
             title = {
                 Text(
-                    text = "فحص توافق الجهاز قبل التثبيت (Device Compatibility Check)",
+                    text = "فحص الهوية الحقيقية داخل APK قبل التثبيت",
                     style = MaterialTheme.typography.titleLarge,
                     color = NeonCyan,
                     fontWeight = FontWeight.Bold
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("• Android Version: ${liveDeviceCheck.deviceAndroidVersion}", color = TextPrimary)
-                    Text("• API Level: ${liveDeviceCheck.deviceApiLevel}", color = TextPrimary)
-                    Text("• Device CPU Architecture: ${liveDeviceCheck.devicePrimaryAbi}", color = TextPrimary)
-                    Text("• APK Minimum SDK: ${liveDeviceCheck.apkMinSdk}", color = NeonCyan)
-                    Text("• APK Target SDK: ${liveDeviceCheck.apkTargetSdk}", color = NeonCyan)
-                    Text("• APK Architecture: ${liveDeviceCheck.apkArchitecture}", color = NeonCyan)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("• App Name: ${preInstallInspection.extractedAppName}", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text("• Package Name: ${preInstallInspection.extractedPackageName}", color = NeonCyan, fontWeight = FontWeight.Bold)
+                    Text("• Version Name: ${preInstallInspection.extractedVersionName}", color = TextPrimary)
+                    Text("• Version Code: ${preInstallInspection.extractedVersionCode}", color = TextPrimary)
+                    Text("• Minimum SDK: ${AndroidCompatibilityManager.formatSdkWithAndroidName(preInstallInspection.extractedMinSdk)}", color = NeonCyan)
+                    Text("• Target SDK: ${AndroidCompatibilityManager.formatSdkWithAndroidName(preInstallInspection.extractedTargetSdk)}", color = NeonCyan)
+                    Text("• APK Size: ${preInstallInspection.apkSizeFormatted}", color = TextPrimary)
                     Text(
-                        text = "• هل APK موقع رقمياً؟ ${if (liveDeviceCheck.isApkSigned) "نعم ✓" else "لا ✗"}",
-                        color = if (liveDeviceCheck.isApkSigned) EmeraldGreen else CrimsonError
+                        text = "• Signing Status: ${preInstallInspection.signingStatus}",
+                        color = if (preInstallInspection.isSigned) EmeraldGreen else CrimsonError
                     )
                     Text(
-                        text = "• هل بنية APK وBinary Manifest صالحة؟ ${if (liveDeviceCheck.isApkStructureValid) "نعم ✓" else "لا ✗"}",
-                        color = if (liveDeviceCheck.isApkStructureValid) EmeraldGreen else CrimsonError
-                    )
-                    HorizontalDivider(color = StudioCardBorder)
-                    Text(
-                        text = liveDeviceCheck.statusSummaryArabic,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (liveDeviceCheck.canInstallOnThisDevice) EmeraldGreen else CrimsonError,
+                        text = "• الاستقلالية عن الاستوديو: ${if (preInstallInspection.isStandaloneFromStudio) "✓ تطبيق مستقل 100% عن HTML TO APK STUDIO" else "✗ مطابق لحزمة الاستوديو (محظور!)"}",
+                        color = if (preInstallInspection.isStandaloneFromStudio) EmeraldGreen else CrimsonError,
                         fontWeight = FontWeight.Bold
                     )
+                    HorizontalDivider(color = StudioCardBorder)
+                    if (preInstallInspection.blockingErrorArabic != null) {
+                        Text(
+                            text = preInstallInspection.blockingErrorArabic,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = CrimsonError,
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else {
+                        Text(
+                            text = "✓ تم التحقق من الهوية المستقلة (${preInstallInspection.extractedPackageName}) وجاهزية الحزمة للتثبيت بجانب جميع التطبيقات الأخرى.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = EmeraldGreen,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -897,10 +1024,10 @@ fun ApkBuilderTabScreen(
                         showInstallPreCheckDialog = null
                         onInstallApk(fileToInstall)
                     },
-                    enabled = liveDeviceCheck.canInstallOnThisDevice,
+                    enabled = preInstallInspection.canProceedWithInstall && preInstallInspection.isStandaloneFromStudio,
                     colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen)
                 ) {
-                    Text("متابعة تثبيت APK الآن", color = Color.Black, fontWeight = FontWeight.Bold)
+                    Text("تثبيت ${preInstallInspection.extractedAppName} الآن", color = Color.Black, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -1129,25 +1256,23 @@ private fun BuildProgressCardSection(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "تقرير البناء والفحص المفصل (Detailed Build & Validation Report):",
+                            text = "بيانات APK الحقيقية المستخرجة قبل التثبيت (Pre-Install APK Inspection):",
                             style = MaterialTheme.typography.titleMedium,
                             color = NeonCyan,
                             fontWeight = FontWeight.Bold
                         )
                         Text("✓ Build Status: ${report.buildStatus}", color = EmeraldGreen, fontWeight = FontWeight.Bold)
-                        Text("✓ APK Validation: ${if (report.apkValidationResult.isValid) "✓ APK Valid (ZIP + DEX + Uncompressed resources.arsc)" else "✗ Invalid"}", color = EmeraldGreen)
+                        Text("✓ App Name (داخل APK): ${report.appName}", color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Text("✓ Package Name (داخل APK): ${report.packageName}", color = NeonCyan, fontWeight = FontWeight.Bold)
+                        Text("✓ Version Name: ${report.versionName}", color = TextPrimary)
+                        Text("✓ Version Code: ${report.versionCode}", color = TextPrimary)
+                        Text("✓ Minimum SDK: ${report.minimumAndroidLabel}", color = NeonCyan)
+                        Text("✓ Target SDK: ${report.targetAndroidLabel}", color = TextPrimary)
+                        Text("✓ Compile SDK: ${report.compileSdkLabel}", color = TextPrimary)
+                        Text("✓ APK Size: ${report.apkSizeFormatted}", color = TextPrimary)
                         Text("✓ Signing Status: ${report.signingStatus}", color = EmeraldGreen)
-                        Text("✓ Manifest Validation: ${if (report.apkValidationResult.hasBinaryManifest) "✓ Binary AXML Manifest Valid" else "✗ Invalid"}", color = EmeraldGreen)
-                        Text("✓ Install Compatibility: ${if (report.deviceCompatibility.canInstallOnThisDevice) "✓ Compatible with this Device" else "✗ Not Compatible"}", color = if (report.deviceCompatibility.canInstallOnThisDevice) EmeraldGreen else CrimsonError)
-                        HorizontalDivider(color = StudioCardBorder)
-                        Text("• APK Size: ${report.apkSizeFormatted}", color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-                        Text("• Minimum Android: ${report.minimumAndroidLabel}", color = NeonCyan, style = MaterialTheme.typography.bodyMedium)
-                        Text("• Target Android: ${report.targetAndroidLabel}", color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-                        Text("• Compile SDK: ${report.compileSdkLabel}", color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-                        Text("• CPU Architecture: ${report.cpuArchitecture}", color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-                        Text("• Package Name: ${report.packageName}", color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-                        Text("• Version: ${report.versionName} (versionCode = ${report.versionCode})", color = TextPrimary, style = MaterialTheme.typography.bodyMedium)
-                        Text("• Certificate SHA-256: ${report.certSha256Fingerprint.take(29)}...", color = TextSecondary, style = MaterialTheme.typography.labelMedium)
+                        Text("✓ مسار عزل المشروع: ${report.outputApkPath}", color = TextSecondary, style = MaterialTheme.typography.labelMedium)
+                        Text("✓ Certificate SHA-256: ${report.certSha256Fingerprint.take(29)}...", color = TextSecondary, style = MaterialTheme.typography.labelMedium)
                     }
                 }
 
@@ -1158,6 +1283,7 @@ private fun BuildProgressCardSection(
                 ) {
                     Button(
                         onClick = { onInstallApkRequest(buildState.outputApkFile) },
+                        enabled = report.preInstallInspection.canProceedWithInstall && report.preInstallInspection.isStandaloneFromStudio,
                         colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen),
                         modifier = Modifier
                             .weight(1f)
@@ -1165,7 +1291,7 @@ private fun BuildProgressCardSection(
                     ) {
                         Icon(Icons.Default.InstallMobile, contentDescription = null, tint = Color.Black)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("فحص وتثبيت APK", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Text("تثبيت ${report.appName} (${report.packageName})", color = Color.Black, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
 
                     Button(

@@ -61,12 +61,12 @@ object RealApkSignerEngine {
         val keyFile = if (isReleaseMode) {
             File(keystoresDir, "${sanitizedPkg}_release_keystore.json")
         } else {
-            File(keystoresDir, "android_debug_keystore.json")
+            File(keystoresDir, "${sanitizedPkg}_debug_keystore.json")
         }
 
-        val alias = if (isReleaseMode) "release_upload_key" else "androiddebugkey"
-        val cleanDev = developerName.replace(Regex("[^a-zA-Z0-9 ]"), "").trim().ifBlank { "Studio Developer" }
-        val subjectCommonName = if (isReleaseMode) cleanDev else "Android Debug"
+        val alias = if (isReleaseMode) "project_release_key" else "project_debug_key"
+        val cleanDev = developerName.replace(Regex("[^a-zA-Z0-9 ]"), "").trim().ifBlank { "Independent Developer" }
+        val subjectCommonName = if (isReleaseMode) cleanDev else "$cleanDev Debug"
 
         if (keyFile.exists()) {
             try {
@@ -80,7 +80,7 @@ object RealApkSignerEngine {
                 val sha256Hex = sha256ColonHex(certBytes)
                 return SigningCredentials(
                     alias = alias,
-                    subjectDn = json.optString("subjectDn", "CN=$subjectCommonName,O=Android,C=US"),
+                    subjectDn = json.optString("subjectDn", "CN=$subjectCommonName,O=$cleanDev,C=US"),
                     privateKey = privKey,
                     publicKey = pubKey,
                     x509CertificateDer = certBytes,
@@ -102,14 +102,15 @@ object RealApkSignerEngine {
         val certDer = generateSelfSignedX509CertificateDer(
             keyPair = keyPair,
             commonName = subjectCommonName,
-            organization = if (isReleaseMode) "HTML TO APK STUDIO" else "Android",
+            organization = cleanDev,
             country = "US",
             serial = serialNumber
         )
 
-        val subjectDn = "CN=$subjectCommonName,O=${if (isReleaseMode) "HTML TO APK STUDIO" else "Android"},C=US"
+        val subjectDn = "CN=$subjectCommonName,O=$cleanDev,C=US"
         val jsonToSave = JSONObject().apply {
             put("alias", alias)
+            put("packageName", packageName)
             put("subjectDn", subjectDn)
             put("createdAt", System.currentTimeMillis())
             put("isReleaseKey", isReleaseMode)
@@ -146,7 +147,7 @@ object RealApkSignerEngine {
     ): SignatureBlockFiles {
         val sbManifest = StringBuilder()
         sbManifest.append("Manifest-Version: 1.0\r\n")
-        sbManifest.append("Created-By: 1.0 (HTML TO APK STUDIO Signing Engine)\r\n\r\n")
+        sbManifest.append("Created-By: 1.0 (Android Standalone APK Packager)\r\n\r\n")
 
         val individualSections = mutableMapOf<String, ByteArray>()
         for ((entryName, base64Digest) in entrySha256DigestsBase64.entries.sortedBy { it.key }) {
@@ -162,7 +163,7 @@ object RealApkSignerEngine {
 
         val sbSf = StringBuilder()
         sbSf.append("Signature-Version: 1.0\r\n")
-        sbSf.append("Created-By: 1.0 (HTML TO APK STUDIO Signing Engine)\r\n")
+        sbSf.append("Created-By: 1.0 (Android Standalone APK Packager)\r\n")
         sbSf.append("SHA-256-Digest-Manifest: $fullManifestDigestBase64\r\n\r\n")
 
         for ((entryName, sectionBytes) in individualSections) {

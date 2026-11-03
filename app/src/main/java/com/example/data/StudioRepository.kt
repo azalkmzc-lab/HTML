@@ -27,13 +27,14 @@ class StudioRepository(
 
     suspend fun ensureDefaultProjectsSeeded() = withContext(Dispatchers.IO) {
         if (dao.getProjectCount() == 0) {
-            val iptvProjectId = dao.insertProject(
+            val xtvProjectId = dao.insertProject(
                 StudioProjectEntity(
-                    name = "MAX IPTV LIVE PRO",
-                    packageName = "com.maxstudio.iptvlive.pro",
+                    name = "XTV",
+                    packageName = "com.xtv.live",
                     versionName = "2.1.0",
                     versionCode = 21,
-                    developerName = "HTML TO APK STUDIO",
+                    developerName = "XTV Media Network",
+                    appDescription = "تطبيق XTV المستقل للبث التلفزيوني المباشر والقنوات الفضائية",
                     primaryColorHex = "#00E5FF",
                     accentColorHex = "#7C4DFF",
                     iconPreset = "LIVE_TV",
@@ -50,7 +51,7 @@ class StudioRepository(
 
             val defaultChannels = listOf(
                 IptvChannelEntity(
-                    projectId = iptvProjectId,
+                    projectId = xtvProjectId,
                     name = "قناة الوثائقية الفضائية HD",
                     category = "وثائقية",
                     streamUrl = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
@@ -61,7 +62,7 @@ class StudioRepository(
                     sortOrder = 1
                 ),
                 IptvChannelEntity(
-                    projectId = iptvProjectId,
+                    projectId = xtvProjectId,
                     name = "الإخبارية العالمية المباشرة 24",
                     category = "إخبارية",
                     streamUrl = "https://cph-p2p-msl.akamaized.net/hls/live/2000341/test/master.m3u8",
@@ -72,7 +73,7 @@ class StudioRepository(
                     sortOrder = 2
                 ),
                 IptvChannelEntity(
-                    projectId = iptvProjectId,
+                    projectId = xtvProjectId,
                     name = "الرياضية بريميوم 1 FHD",
                     category = "رياضية",
                     streamUrl = "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8",
@@ -83,7 +84,7 @@ class StudioRepository(
                     sortOrder = 3
                 ),
                 IptvChannelEntity(
-                    projectId = iptvProjectId,
+                    projectId = xtvProjectId,
                     name = "سينما ماكس DASH 4K",
                     category = "أفلام",
                     streamUrl = "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd",
@@ -92,39 +93,67 @@ class StudioRepository(
                     backupServersCsv = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
                     buttonSelectorId = "onclick:playChannel('سينما ماكس DASH 4K')",
                     sortOrder = 4
-                ),
-                IptvChannelEntity(
-                    projectId = iptvProjectId,
-                    name = "أفلام الخيال العلمي Studio HD",
-                    category = "أفلام",
-                    streamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
-                    streamFormat = "MP4",
-                    logoUrl = "https://picsum.photos/seed/scifi/120/120",
-                    backupServersCsv = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-                    buttonSelectorId = "onclick:playChannel('أفلام الخيال العلمي Studio HD')",
-                    sortOrder = 5
-                ),
-                IptvChannelEntity(
-                    projectId = iptvProjectId,
-                    name = "قناة المحركات والسباقات GT",
-                    category = "رياضية",
-                    streamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4",
-                    streamFormat = "MP4",
-                    logoUrl = "https://picsum.photos/seed/motors/120/120",
-                    backupServersCsv = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-                    buttonSelectorId = "onclick:playChannel('قناة المحركات والسباقات GT')",
-                    sortOrder = 6
                 )
             )
             dao.insertChannels(defaultChannels)
 
+            val sportProjectId = dao.insertProject(
+                StudioProjectEntity(
+                    name = "SPORT",
+                    packageName = "com.sport.live",
+                    versionName = "1.5.0",
+                    versionCode = 15,
+                    developerName = "Sport Live Broadcast",
+                    appDescription = "تطبيق SPORT المستقل للقنوات الرياضية والبطولات المباشرة",
+                    primaryColorHex = "#10B981",
+                    accentColorHex = "#00E5FF",
+                    iconPreset = "LIVE_TV",
+                    orientation = "AUTO",
+                    permissionsCsv = "INTERNET,ACCESS_NETWORK_STATE,WAKE_LOCK",
+                    htmlCode = SampleTemplates.ARABIC_SPORTS_NEWS_IPTV_HTML,
+                    cssCode = SampleTemplates.ARABIC_SPORTS_NEWS_IPTV_CSS,
+                    jsCode = SampleTemplates.ARABIC_SPORTS_NEWS_IPTV_JS,
+                    detectedType = "تطبيق البث التلفزيوني المباشر IPTV",
+                    isIptvModeEnabled = true,
+                    isSavedFavorite = true
+                )
+            )
+
+            dao.insertChannels(
+                listOf(
+                    IptvChannelEntity(
+                        projectId = sportProjectId,
+                        name = "الرياضية بريميوم 1 FHD",
+                        category = "رياضية",
+                        streamUrl = "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8",
+                        streamFormat = "HLS (M3U8)",
+                        logoUrl = "https://picsum.photos/seed/sport1/120/120",
+                        backupServersCsv = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+                        buttonSelectorId = "onclick:playChannel('الرياضية بريميوم 1 FHD')",
+                        sortOrder = 1
+                    ),
+                    IptvChannelEntity(
+                        projectId = sportProjectId,
+                        name = "قناة المحركات والسباقات GT",
+                        category = "رياضية",
+                        streamUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4",
+                        streamFormat = "MP4",
+                        logoUrl = "https://picsum.photos/seed/motors/120/120",
+                        backupServersCsv = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+                        buttonSelectorId = "onclick:playChannel('قناة المحركات والسباقات GT')",
+                        sortOrder = 2
+                    )
+                )
+            )
+
             val vodProjectId = dao.insertProject(
                 StudioProjectEntity(
-                    name = "سينما بلس VOD & Series",
-                    packageName = "com.cinemaplus.vod.player",
+                    name = "MOVIES",
+                    packageName = "com.movies.player",
                     versionName = "1.4.0",
                     versionCode = 14,
-                    developerName = "HTML TO APK STUDIO",
+                    developerName = "Cinema Movies Hub",
+                    appDescription = "تطبيق MOVIES المستقل لمشاهدة الأفلام والمسلسلات VOD",
                     primaryColorHex = "#7C4DFF",
                     accentColorHex = "#00E5FF",
                     iconPreset = "MOVIE_HUB",
@@ -162,17 +191,6 @@ class StudioRepository(
                         backupServersCsv = "https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd",
                         buttonSelectorId = "onclick:playMovie('Big Buck Bunny')",
                         sortOrder = 2
-                    ),
-                    IptvChannelEntity(
-                        projectId = vodProjectId,
-                        name = "قناة سينما لايف M3U8",
-                        category = "بث مباشر",
-                        streamUrl = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-                        streamFormat = "HLS (M3U8)",
-                        logoUrl = "https://picsum.photos/seed/movie3/120/160",
-                        backupServersCsv = "",
-                        buttonSelectorId = "onclick:playMovie('Live Cinema')",
-                        sortOrder = 3
                     )
                 )
             )

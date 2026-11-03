@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.builder.AndroidCompatibilityManager
 import com.example.data.SampleTemplates
 import com.example.player.NativeMedia3PlayerScreen
 import com.example.ui.screens.*
@@ -432,15 +433,17 @@ fun HtmlToApkStudioRootApp(viewModel: StudioViewModel) {
                                             WorkspaceTab.APK_BUILDER -> {
                                                 ApkBuilderTabScreen(
                                                     project = proj,
+                                                    allProjects = allProjects,
                                                     channelsCount = activeChannels.size,
                                                     buildState = apkBuildState,
-                                                    onSaveMetadata = { name, pkg, verName, verCode, dev, primary, accent, icon, orient, perms, autoCompat, minSdk, targetSdk, compileSdk, arch, signingMode ->
+                                                    onSaveMetadata = { name, pkg, verName, verCode, dev, appDesc, primary, accent, icon, orient, perms, autoCompat, minSdk, targetSdk, compileSdk, arch, signingMode ->
                                                         viewModel.updateProjectMetadata(
                                                             name = name,
                                                             packageName = pkg,
                                                             versionName = verName,
                                                             versionCode = verCode,
                                                             developerName = dev,
+                                                            appDescription = appDesc,
                                                             primaryColorHex = primary,
                                                             accentColorHex = accent,
                                                             iconPreset = icon,
@@ -573,27 +576,36 @@ private fun NewProjectModalDialog(
     onDismiss: () -> Unit,
     onCreate: (name: String, pkg: String, templateType: String) -> Unit
 ) {
-    var name by remember { mutableStateOf("تطبيقي للبث المباشر IPTV") }
-    var pkg by remember { mutableStateOf("com.studio.iptv.custom") }
+    var name by remember { mutableStateOf("XTV") }
+    var pkg by remember { mutableStateOf("com.xtv.live") }
+    var pkgManuallyEdited by remember { mutableStateOf(false) }
     var selectedTemplate by remember { mutableStateOf("IPTV") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = StudioSurface,
-        title = { Text("إنشاء مشروع أندرويد جديد", color = NeonCyan, fontWeight = FontWeight.Bold) },
+        title = { Text("إنشاء تطبيق أندرويد مستقل جديد", color = NeonCyan, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
-                    label = { Text("اسم المشروع / التطبيق") },
+                    onValueChange = { newName ->
+                        name = newName
+                        if (!pkgManuallyEdited) {
+                            pkg = AndroidCompatibilityManager.generateUniquePackageName(newName)
+                        }
+                    },
+                    label = { Text("اسم التطبيق الجديد (مثال: XTV أو SPORT)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
                     value = pkg,
-                    onValueChange = { pkg = it },
-                    label = { Text("Package Name") },
+                    onValueChange = {
+                        pkg = it
+                        pkgManuallyEdited = true
+                    },
+                    label = { Text("Package Name مستقل (اتركه فارغاً للتوليد التلقائي)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )

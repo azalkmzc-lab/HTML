@@ -11,6 +11,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.analyzer.AnalysisReport
 import com.example.analyzer.HtmlAiAnalyzerEngine
+import com.example.builder.AndroidCompatibilityManager
 import com.example.builder.ApkBuildProgress
 import com.example.builder.RealApkCompilerEngine
 import com.example.data.*
@@ -50,8 +51,8 @@ data class StudioSettingsState(
     val isRtlArabic: Boolean = true,
     val autoSaveEnabled: Boolean = true,
     val autoAnalyzeOnChange: Boolean = true,
-    val defaultDeveloperName: String = "HTML TO APK STUDIO",
-    val defaultPackagePrefix: String = "com.studio.apk"
+    val defaultDeveloperName: String = "Independent Developer",
+    val defaultPackagePrefix: String = "com.app.live"
 )
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
@@ -125,7 +126,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 isDarkTheme = prefs[KEY_DARK_THEME] ?: true,
                 isRtlArabic = prefs[KEY_RTL_ARABIC] ?: true,
                 autoSaveEnabled = prefs[KEY_AUTO_SAVE] ?: true,
-                defaultDeveloperName = prefs[KEY_DEV_NAME] ?: "HTML TO APK STUDIO"
+                defaultDeveloperName = prefs[KEY_DEV_NAME] ?: "Independent Developer"
             )
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), StudioSettingsState())
@@ -210,10 +211,31 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             val initialReport = analyzerEngine.analyzeProjectCode(0L, html, css, js)
+            val cleanName = name.trim().ifBlank { "مشروع أندرويد جديد" }
+            val existingPackages = allProjects.value.map { it.packageName }
+            val studioPkg = getApplication<Application>().packageName
+            val validatedPkg = AndroidCompatibilityManager.validatePackageNameIndependence(
+                rawPackageName = packageName,
+                appName = cleanName,
+                currentProjectId = 0L,
+                allProjects = allProjects.value,
+                studioPackageName = studioPkg
+            )
+            val finalPkg = if (validatedPkg.isValid) {
+                validatedPkg.sanitizedPackageName
+            } else {
+                AndroidCompatibilityManager.generateUniquePackageName(
+                    appName = cleanName,
+                    existingPackages = existingPackages,
+                    studioPackageName = studioPkg
+                )
+            }
+
             val newProj = StudioProjectEntity(
-                name = name.ifBlank { "مشروع أندرويد جديد" },
-                packageName = packageName.ifBlank { "com.studio.app.custom" },
+                name = cleanName,
+                packageName = finalPkg,
                 developerName = settingsState.value.defaultDeveloperName,
+                appDescription = "تطبيق $cleanName المستقل للعمل على أندرويد",
                 htmlCode = html,
                 cssCode = css,
                 jsCode = js,
@@ -224,7 +246,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val saved = repository.getProjectById(id)
             if (saved != null) {
                 loadProjectIntoWorkspace(saved, navigateToEditor = true)
-                showStatus("تم إنشاء المشروع '${saved.name}' وتحليل الكود تلقائياً!")
+                showStatus("تم إنشاء المشروع المستقل '${saved.name}' بمعرف الحزمة ${saved.packageName}!")
             }
         }
     }
@@ -235,11 +257,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         viewModelScope.launch {
             val report = analyzerEngine.analyzeProjectCode(0L, pastedHtml, "", "")
-            val slug = projectName.lowercase().replace(Regex("[^a-z0-9]"), "").ifBlank { "iptvapp" }
+            val cleanName = projectName.trim().ifBlank { "تطبيق HTML مستورد" }
+            val uniquePkg = AndroidCompatibilityManager.generateUniquePackageName(
+                appName = cleanName,
+                existingPackages = allProjects.value.map { it.packageName },
+                studioPackageName = getApplication<Application>().packageName
+            )
             val newProj = StudioProjectEntity(
-                name = projectName.ifBlank { "تطبيق HTML مستورد" },
-                packageName = "com.studio.$slug.app",
+                name = cleanName,
+                packageName = uniquePkg,
                 developerName = settingsState.value.defaultDeveloperName,
+                appDescription = "تطبيق $cleanName المستقل المبني من كود HTML",
                 htmlCode = pastedHtml,
                 cssCode = "",
                 jsCode = "",
@@ -251,7 +279,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             if (saved != null) {
                 loadProjectIntoWorkspace(saved, navigateToEditor = true)
                 _activeWorkspaceTab.value = WorkspaceTab.AI_ANALYZER
-                showStatus("تم لصق الكود واكتشاف ${report.detectedChannels.size} قناة بث (${report.projectTypeArabic})")
+                showStatus("تم إنشاء المشروع المستقل '${saved.name}' ($uniquePkg) واكتشاف ${report.detectedChannels.size} قناة!")
             }
         }
     }
@@ -441,6 +469,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         versionName: String,
         versionCode: Int,
         developerName: String,
+        appDescription: String = "تطبيق أندرويد مستقل للبث المباشر والوسائط",
         primaryColorHex: String,
         accentColorHex: String,
         iconPreset: String,
@@ -454,12 +483,25 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         buildSigningMode: String = "DEBUG"
     ) {
         val current = _activeProject.value ?: return
+        val pkgCheck = AndroidCompatibilityManager.validatePackageNameIndependence(
+            rawPackageName = packageName,
+            appName = name,
+            currentProjectId = current.id,
+            allProjects = allProjects.value,
+            studioPackageName = getApplication<Application>().packageName
+        )
+        if (!pkgCheck.isValid) {
+            showStatus(pkgCheck.errorMessageArabic ?: "اسم الحزمة غير صالح.")
+            return
+        }
+
         val updated = current.copy(
-            name = name,
-            packageName = packageName,
-            versionName = versionName,
-            versionCode = versionCode,
-            developerName = developerName,
+            name = name.trim().ifBlank { current.name },
+            packageName = pkgCheck.sanitizedPackageName,
+            versionName = versionName.trim().ifBlank { "1.0.0" },
+            versionCode = versionCode.coerceAtLeast(1),
+            developerName = developerName.trim().ifBlank { "Independent Developer" },
+            appDescription = appDescription.trim().ifBlank { "تطبيق أندرويد مستقل" },
             primaryColorHex = primaryColorHex,
             accentColorHex = accentColorHex,
             iconPreset = iconPreset,
@@ -476,7 +518,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         _activeProject.value = updated
         viewModelScope.launch {
             repository.updateProject(updated)
-            showStatus("تم حفظ إعدادات التوافق (minSdk=$minSdk, targetSdk=$targetSdk) وتوقيع APK بنجاح.")
+            showStatus("تم حفظ هوية التطبيق المستقل (${updated.name} • ${updated.packageName}) بنجاح.")
         }
     }
 
@@ -530,7 +572,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 project.jsCode
             )
 
-            compilerEngine.executeRealApkBuild(project, channels, report).collect { progress ->
+            compilerEngine.executeRealApkBuild(
+                project = project,
+                channels = channels,
+                analysisReport = report,
+                allExistingProjects = allProjects.value
+            ).collect { progress ->
                 _apkBuildState.value = progress
                 if (progress is ApkBuildProgress.Completed) {
                     val updatedProject = project.copy(

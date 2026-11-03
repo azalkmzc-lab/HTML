@@ -10,7 +10,8 @@ data class StudioProjectEntity(
     val packageName: String,
     val versionName: String = "1.0.0",
     val versionCode: Int = 1,
-    val developerName: String = "Studio Developer",
+    val developerName: String = "Independent Developer",
+    val appDescription: String = "تطبيق أندرويد مستقل للبث المباشر والوسائط",
     val primaryColorHex: String = "#00E5FF",
     val accentColorHex: String = "#7C4DFF",
     val iconPreset: String = "LIVE_TV", // LIVE_TV, MOVIE_HUB, WEB_APP, GAME_PAD, MUSIC_WAVE
