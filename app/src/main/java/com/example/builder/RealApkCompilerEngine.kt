@@ -936,6 +936,10 @@ class RealApkCompilerEngine(private val context: Context) {
                             <category android:name="android.intent.category.LAUNCHER" />
                         </intent-filter>
                     </activity>
+                    <activity
+                        android:name=".PlayerActivity"
+                        android:exported="false"
+                        android:configChanges="orientation|screenSize|keyboardHidden" />
                 </application>
             </manifest>
         """.trimIndent()
@@ -951,45 +955,221 @@ class RealApkCompilerEngine(private val context: Context) {
         val mainActivityContent = """
             package $sanitizedPkg
 
+            import android.content.Intent
             import android.os.Build
             import android.os.Bundle
+            import android.webkit.CookieManager
             import android.webkit.JavascriptInterface
+            import android.webkit.WebSettings
             import android.webkit.WebView
+            import android.webkit.WebViewClient
+            import android.widget.Toast
             import androidx.activity.ComponentActivity
-            import androidx.media3.common.MediaItem
-            import androidx.media3.exoplayer.ExoPlayer
+            import androidx.activity.OnBackPressedCallback
+            import org.json.JSONObject
 
             // Standalone Application: ${project.name} ($sanitizedPkg)
             // Description: ${project.appDescription}
             class MainActivity : ComponentActivity() {
-                private var exoPlayer: ExoPlayer? = null
+                private lateinit var webView: WebView
+                private var jsBackStackDepth: Int = 0
 
                 override fun onCreate(savedInstanceState: Bundle?) {
                     super.onCreate(savedInstanceState)
-                    exoPlayer = ExoPlayer.Builder(this).build()
-                    val webView = WebView(this)
-                    webView.settings.javaScriptEnabled = true
-                    webView.settings.domStorageEnabled = true
+                    webView = WebView(this)
+                    val settings = webView.settings
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.databaseEnabled = true
+                    settings.allowFileAccess = true
+                    settings.allowContentAccess = true
+                    @Suppress("DEPRECATION")
+                    settings.allowFileAccessFromFileURLs = true
+                    @Suppress("DEPRECATION")
+                    settings.allowUniversalAccessFromFileURLs = true
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
-                        webView.settings.mediaPlaybackRequiresUserGesture = false
+                        settings.mediaPlaybackRequiresUserGesture = false
                     }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+                    }
+                    CookieManager.getInstance().setAcceptCookie(true)
+
+                    webView.webViewClient = WebViewClient()
                     webView.addJavascriptInterface(object {
+                        @JavascriptInterface
+                        fun openNativePlayerJson(jsonPayload: String) {
+                            runOnUiThread {
+                                val obj = JSONObject(jsonPayload)
+                                launchPlayer(
+                                    channelId = obj.optString("channelId", "ch_0"),
+                                    channelName = obj.optString("channelName", "Live Stream"),
+                                    channelLogo = obj.optString("channelLogo", ""),
+                                    streamUrl = obj.optString("streamUrl", ""),
+                                    streamType = obj.optString("streamType", "HLS (M3U8)"),
+                                    categoryName = obj.optString("categoryName", "Live TV"),
+                                    backupUrls = obj.optString("backupUrls", "")
+                                )
+                            }
+                        }
+
+                        @JavascriptInterface
+                        fun openNativeExoPlayerFull(
+                            channelId: String,
+                            channelName: String,
+                            channelLogo: String,
+                            streamUrl: String,
+                            streamType: String,
+                            categoryName: String,
+                            backupUrlsCsv: String
+                        ) {
+                            runOnUiThread {
+                                launchPlayer(
+                                    channelId, channelName, channelLogo,
+                                    streamUrl, streamType, categoryName, backupUrlsCsv
+                                )
+                            }
+                        }
+
                         @JavascriptInterface
                         fun openNativeExoPlayer(title: String, streamUrl: String, category: String) {
                             runOnUiThread {
-                                exoPlayer?.setMediaItem(MediaItem.fromUri(streamUrl))
-                                exoPlayer?.prepare()
-                                exoPlayer?.play()
+                                launchPlayer("ch_live", title, "", streamUrl, "HLS (M3U8)", category, "")
                             }
                         }
+
+                        @JavascriptInterface
+                        fun reportChannelError(channelName: String, reason: String) {
+                            runOnUiThread {
+                                Toast.makeText(this@MainActivity, "${'$'}channelName: ${'$'}reason", Toast.LENGTH_LONG).show()
+                            }
+                        }
+
+                        @JavascriptInterface
+                        fun onNavigationStateChanged(stackDepth: Int, currentView: String) {
+                            jsBackStackDepth = stackDepth
+                        }
                     }, "AndroidNativePlayer")
+
+                    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                        override fun handleOnBackPressed() {
+                            webView.evaluateJavascript(
+                                "(function(){ return (window.__handleStudioSmartBack && window.__handleStudioSmartBack()) ? 'HANDLED' : 'ROOT'; })()"
+                            ) { result ->
+                                if (result != null && result.contains("HANDLED")) return@evaluateJavascript
+                                if (webView.canGoBack()) {
+                                    webView.goBack()
+                                } else {
+                                    isEnabled = false
+                                    onBackPressedDispatcher.onBackPressed()
+                                }
+                            }
+                        }
+                    })
+
                     webView.loadUrl("file:///android_asset/index.html")
                     setContentView(webView)
                 }
 
+                private fun launchPlayer(
+                    channelId: String,
+                    channelName: String,
+                    channelLogo: String,
+                    streamUrl: String,
+                    streamType: String,
+                    categoryName: String,
+                    backupUrls: String
+                ) {
+                    if (streamUrl.isBlank()) {
+                        Toast.makeText(this, "رابط البث غير متوفر لهذه القناة: ${'$'}channelName", Toast.LENGTH_LONG).show()
+                        return
+                    }
+                    val intent = Intent(this, PlayerActivity::class.java).apply {
+                        putExtra("channelId", channelId)
+                        putExtra("channelName", channelName)
+                        putExtra("channelLogo", channelLogo)
+                        putExtra("streamUrl", streamUrl)
+                        putExtra("streamType", streamType)
+                        putExtra("categoryName", categoryName)
+                        putExtra("backupUrls", backupUrls)
+                    }
+                    startActivity(intent)
+                }
+            }
+        """.trimIndent()
+
+        val playerActivityContent = """
+            package $sanitizedPkg
+
+            import android.content.pm.ActivityInfo
+            import android.os.Bundle
+            import android.view.WindowManager
+            import androidx.activity.ComponentActivity
+            import androidx.activity.OnBackPressedCallback
+            import androidx.media3.common.MediaItem
+            import androidx.media3.common.PlaybackException
+            import androidx.media3.common.Player
+            import androidx.media3.exoplayer.ExoPlayer
+            import androidx.media3.ui.PlayerView
+
+            class PlayerActivity : ComponentActivity() {
+                private var exoPlayer: ExoPlayer? = null
+                private var isFullscreenLandscape: Boolean = false
+
+                override fun onCreate(savedInstanceState: Bundle?) {
+                    super.onCreate(savedInstanceState)
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+                    val streamUrl = intent.getStringExtra("streamUrl") ?: ""
+                    val backupUrls = (intent.getStringExtra("backupUrls") ?: "")
+                        .split(",")
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+
+                    val playerView = PlayerView(this)
+                    val player = ExoPlayer.Builder(this).build()
+                    exoPlayer = player
+                    playerView.player = player
+                    setContentView(playerView)
+
+                    if (streamUrl.isNotBlank()) {
+                        player.setMediaItem(MediaItem.fromUri(streamUrl))
+                        backupUrls.forEach { backup ->
+                            player.addMediaItem(MediaItem.fromUri(backup))
+                        }
+                        player.prepare()
+                        player.playWhenReady = true
+                    }
+
+                    player.addListener(object : Player.Listener {
+                        override fun onPlayerError(error: PlaybackException) {
+                            if (player.hasNextMediaItem()) {
+                                player.seekToNextMediaItem()
+                                player.prepare()
+                                player.play()
+                            }
+                        }
+                    })
+
+                    onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                        override fun handleOnBackPressed() {
+                            if (isFullscreenLandscape) {
+                                isFullscreenLandscape = false
+                                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                            } else {
+                                exoPlayer?.stop()
+                                exoPlayer?.release()
+                                exoPlayer = null
+                                finish()
+                            }
+                        }
+                    })
+                }
+
                 override fun onStop() {
                     super.onStop()
-                    exoPlayer?.stop()
+                    exoPlayer?.pause()
                 }
 
                 override fun onDestroy() {
@@ -1011,7 +1191,8 @@ class RealApkCompilerEngine(private val context: Context) {
             "app/src/main/assets/app.js" to project.jsCode,
             "app/src/main/assets/iptv_channels.json" to channelsJson,
             "app/src/main/assets/app_config.json" to appConfigJson,
-            "app/src/main/java/$pkgPath/MainActivity.kt" to mainActivityContent
+            "app/src/main/java/$pkgPath/MainActivity.kt" to mainActivityContent,
+            "app/src/main/java/$pkgPath/PlayerActivity.kt" to playerActivityContent
         )
 
         textFilesMap.forEach { (relPath, content) ->

@@ -376,4 +376,188 @@ class ExampleRobolectricTest {
             creds2.certSha256Fingerprint
         )
     }
+
+    @Test
+    fun testFirebaseIptvHtmlImportAnalyzeBuildPlayerBridgeAndSmartBackNavigation() = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val analyzer = HtmlAiAnalyzerEngine()
+        val compiler = RealApkCompilerEngine(context)
+
+        // 1. Import HTML project containing Firebase Realtime Database + Categories + Dynamic Channels
+        val firebaseIptvHtml = """
+            <!DOCTYPE html>
+            <html lang="ar" dir="rtl">
+            <head>
+                <meta charset="UTF-8">
+                <title>Firebase Live TV 6010</title>
+                <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+                <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+            </head>
+            <body>
+                <header><h1>Firebase Live TV 6010</h1></header>
+                <nav id="categories-bar">
+                    <button class="cat-tab active" data-category="الكل" onclick="filterCategory('الكل')">الكل</button>
+                    <button class="cat-tab" data-category="قنوات رياضية" onclick="filterCategory('قنوات رياضية')">قنوات رياضية</button>
+                    <button class="cat-tab" data-category="قنوات إخبارية" onclick="filterCategory('قنوات إخبارية')">قنوات إخبارية</button>
+                </nav>
+                <main id="channels-container"></main>
+                <script>
+                    const firebaseConfig = {
+                        apiKey: "AIzaSyTestKeyForFirebaseLiveTv6010",
+                        authDomain: "iptv-live-6010.firebaseapp.com",
+                        databaseURL: "https://iptv-live-6010-default-rtdb.firebaseio.com",
+                        projectId: "iptv-live-6010",
+                        storageBucket: "iptv-live-6010.appspot.com"
+                    };
+                    firebase.initializeApp(firebaseConfig);
+                    const db = firebase.database();
+
+                    db.ref("categories").on("value", function(snap) {
+                        console.log("Categories loaded from Firebase");
+                    });
+
+                    db.ref("channels").on("value", function(snapshot) {
+                        const data = snapshot.val() || {};
+                        const container = document.getElementById("channels-container");
+                        container.innerHTML = "";
+                        Object.keys(data).forEach(function(key) {
+                            const ch = data[key];
+                            const card = document.createElement("div");
+                            card.className = "channel-card";
+                            card.setAttribute("data-channel-id", key);
+                            card.setAttribute("data-title", ch.name);
+                            card.setAttribute("data-logo", ch.logo || "");
+                            card.setAttribute("data-stream", ch.streamUrl);
+                            card.setAttribute("data-category", ch.category || "قنوات رياضية");
+                            card.onclick = function() {
+                                playChannel({
+                                    channelId: key,
+                                    channelName: ch.name,
+                                    channelLogo: ch.logo || "",
+                                    streamUrl: ch.streamUrl,
+                                    streamType: "HLS",
+                                    categoryName: ch.category || "قنوات رياضية"
+                                });
+                            };
+                            container.appendChild(card);
+                        });
+                    });
+
+                    function playChannel(channelObj) {
+                        console.log("Playing channel:", channelObj);
+                    }
+                </script>
+            </body>
+            </html>
+        """.trimIndent()
+
+        // 2. Analyze the Firebase HTML project
+        val report = analyzer.analyzeProjectCode(
+            projectId = 6011L,
+            htmlCode = firebaseIptvHtml,
+            cssCode = "body { background: #0A0E17; color: #FFF; }",
+            jsCode = ""
+        )
+
+        assertTrue("Firebase must be detected", report.firebaseSummary.usesFirebase)
+        assertTrue("Firebase Realtime Database must be detected", report.firebaseSummary.usesRealtimeDatabase)
+        assertEquals("iptv-live-6010", report.firebaseSummary.projectId)
+        assertEquals("https://iptv-live-6010-default-rtdb.firebaseio.com", report.firebaseSummary.databaseUrl)
+        assertTrue(
+            "Must detect 'channels' & 'categories' paths",
+            report.firebaseSummary.detectedPathsAndCollections.containsAll(listOf("channels", "categories"))
+        )
+        assertTrue(
+            "Must detect dynamic playChannel function",
+            report.firebaseSummary.dynamicChannelFunctions.contains("playChannel")
+        )
+        assertTrue("IPTV Smart Mode must be automatically triggered for Firebase channel project", report.isIptvSmartModeTriggered)
+
+        // 3. Verify 100% preservation of original Firebase code + Smart Bridge injection
+        val upgradedHtml = report.upgradedHtmlWithMedia3Bridge
+        assertTrue("Original firebaseConfig must be preserved untouched", upgradedHtml.contains("https://iptv-live-6010-default-rtdb.firebaseio.com"))
+        assertTrue("Original firebase.initializeApp must be preserved", upgradedHtml.contains("firebase.initializeApp(firebaseConfig)"))
+        assertTrue("Original db.ref(\"channels\") must be preserved", upgradedHtml.contains("db.ref(\"channels\")"))
+        assertTrue("Smart Bridge script must be injected", upgradedHtml.contains("id=\"studio-smart-bridge\""))
+        assertTrue("Smart Back Navigation handler must be injected", upgradedHtml.contains("window.__handleStudioSmartBack"))
+        assertTrue("JSON Native Player bridge call must be injected", upgradedHtml.contains("openNativePlayerJson"))
+        assertTrue("Offline/online Firebase auto-reconnect must be injected", upgradedHtml.contains("goOnline"))
+
+        // 4. Build standalone APK and verify PlayerActivity + StandaloneMainActivity + Permissions + Signatures
+        val fbProject = StudioProjectEntity(
+            id = 6011L,
+            name = "Firebase Live 6010",
+            packageName = "com.firebase6010.iptv",
+            versionName = "1.0.0",
+            versionCode = 1,
+            developerName = "Live Stream Studio",
+            appDescription = "تطبيق بث مباشر متصل بقاعدة بيانات Firebase",
+            autoCompatibility = false,
+            minSdk = 21,
+            targetSdk = 35,
+            compileSdk = 35,
+            buildSigningMode = "RELEASE",
+            htmlCode = firebaseIptvHtml,
+            cssCode = "body { background: #0A0E17; color: #FFF; }",
+            jsCode = ""
+        )
+
+        val emissions = compiler.executeRealApkBuild(
+            project = fbProject,
+            channels = report.detectedChannels,
+            analysisReport = report,
+            allExistingProjects = listOf(fbProject)
+        ).toList()
+
+        val finalState = emissions.last()
+        assertTrue("Firebase IPTV APK build must succeed, got: $finalState", finalState is ApkBuildProgress.Completed)
+        val completed = finalState as ApkBuildProgress.Completed
+        val apkFile = completed.outputApkFile
+
+        // Verify AndroidManifest.xml inside APK registers BOTH StandaloneMainActivity and PlayerActivity
+        ZipFile(apkFile).use { zip ->
+            val manifestBytes = zip.getInputStream(zip.getEntry("AndroidManifest.xml")).use { it.readBytes() }
+            val manifestInfo = com.example.builder.BinaryManifestAndZipAligner.inspectBinaryManifest(manifestBytes)
+            assertEquals("com.firebase6010.iptv", manifestInfo.packageNameFound)
+            assertTrue(
+                "Manifest must declare StandaloneMainActivity",
+                manifestInfo.activitiesFound.contains("com.standalone.runtime.StandaloneMainActivity")
+            )
+            assertTrue(
+                "Manifest must declare PlayerActivity for native channel playback",
+                manifestInfo.activitiesFound.contains("com.standalone.runtime.PlayerActivity")
+            )
+            assertTrue(
+                "Manifest must declare INTERNET permission for Firebase & streaming",
+                manifestInfo.permissionsFound.contains("android.permission.INTERNET")
+            )
+            assertTrue(
+                "Manifest must declare ACCESS_NETWORK_STATE permission",
+                manifestInfo.permissionsFound.contains("android.permission.ACCESS_NETWORK_STATE")
+            )
+
+            // Verify classes.dex contains both StandaloneMainActivity and PlayerActivity
+            val dexBytes = zip.getInputStream(zip.getEntry("classes.dex")).use { it.readBytes() }
+            val dexAscii = String(dexBytes, Charsets.ISO_8859_1)
+            assertTrue("classes.dex must contain StandaloneMainActivity", dexAscii.contains("Lcom/standalone/runtime/StandaloneMainActivity;"))
+            assertTrue("classes.dex must contain PlayerActivity", dexAscii.contains("Lcom/standalone/runtime/PlayerActivity;"))
+
+            // Verify assets/index.html inside APK has both Firebase config and Smart Bridge
+            val packagedHtml = zip.getInputStream(zip.getEntry("assets/index.html")).use { it.readBytes().toString(Charsets.UTF_8) }
+            assertTrue(packagedHtml.contains("https://iptv-live-6010-default-rtdb.firebaseio.com"))
+            assertTrue(packagedHtml.contains("window.__handleStudioSmartBack"))
+            assertTrue(packagedHtml.contains("openNativePlayerJson"))
+        }
+
+        // Verify with official Android SDK apksigner & zipalign
+        val apksignerBin = File("/opt/android/sdk/build-tools/36.0.0/apksigner")
+        if (apksignerBin.exists()) {
+            val proc = ProcessBuilder(
+                apksignerBin.absolutePath, "verify", "--verbose", "--min-sdk-version", "21", apkFile.absolutePath
+            ).redirectErrorStream(true).start()
+            val out = proc.inputStream.bufferedReader().readText()
+            assertEquals("apksigner verify must succeed:\n$out", 0, proc.waitFor())
+        }
+    }
 }
+

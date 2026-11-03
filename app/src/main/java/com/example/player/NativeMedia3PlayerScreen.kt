@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -220,6 +221,22 @@ fun NativeMedia3PlayerScreen(
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         } else {
             ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
+    // Smart Back Navigation inside Native Media3 Player:
+    // 1. Exit Fullscreen Landscape first
+    // 2. Close Quality Sheet or Channel Drawer if open
+    // 3. Stop playback cleanly and return to the previous Channel List / Preview
+    BackHandler(enabled = true) {
+        when {
+            isFullScreenLandscape -> toggleLandscape()
+            showQualitySheet -> showQualitySheet = false
+            showChannelDrawer -> showChannelDrawer = false
+            else -> {
+                exoPlayer.stop()
+                onBack()
+            }
         }
     }
 

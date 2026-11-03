@@ -53,6 +53,7 @@ object BinaryManifestAndZipAligner {
 
     private const val ANDROID_NS_URI = "http://schemas.android.com/apk/res/android"
     const val STANDALONE_MAIN_ACTIVITY_CLASS = "com.standalone.runtime.StandaloneMainActivity"
+    const val STANDALONE_PLAYER_ACTIVITY_CLASS = "com.standalone.runtime.PlayerActivity"
     const val STANDALONE_ICON_RES_ID = 0x7f010000
 
     data class ManifestInspectResult(
@@ -65,6 +66,7 @@ object BinaryManifestAndZipAligner {
         val versionNameFound: String? = null,
         val compileSdkFound: Int? = null,
         val launcherActivityFound: String? = null,
+        val activitiesFound: List<String> = emptyList(),
         val permissionsFound: List<String> = emptyList(),
         val areAttributesSortedByResId: Boolean = true
     )
@@ -171,6 +173,7 @@ object BinaryManifestAndZipAligner {
         val idxAppNameValue = getOrAddString(cleanAppName)
         val idxActivity = getOrAddString("activity")
         val idxActivityClassValue = getOrAddString(launcherActivityClass)
+        val idxPlayerActivityClassValue = getOrAddString(STANDALONE_PLAYER_ACTIVITY_CLASS)
         val idxIntentFilter = getOrAddString("intent-filter")
         val idxAction = getOrAddString("action")
         val idxActionMainValue = getOrAddString("android.intent.action.MAIN")
@@ -396,8 +399,39 @@ object BinaryManifestAndZipAligner {
         xmlChunks.write(buildEndElementChunk(line = 19, nameIdx = idxIntentFilter))
         // </activity>
         xmlChunks.write(buildEndElementChunk(line = 20, nameIdx = idxActivity))
+
+        // <activity android:name="com.standalone.runtime.PlayerActivity" android:exported="false" android:configChanges="0x04a0" />
+        val playerActivityAttrs = listOf(
+            AxmlAttr(
+                nsIndex = idxNsUri,
+                nameIndex = idxName,
+                rawValueIndex = idxPlayerActivityClassValue,
+                dataType = TYPE_STRING,
+                dataValue = idxPlayerActivityClassValue,
+                sortResourceId = ATTR_NAME
+            ),
+            AxmlAttr(
+                nsIndex = idxNsUri,
+                nameIndex = idxExported,
+                rawValueIndex = -1,
+                dataType = TYPE_INT_BOOLEAN,
+                dataValue = 0, // false
+                sortResourceId = ATTR_EXPORTED
+            ),
+            AxmlAttr(
+                nsIndex = idxNsUri,
+                nameIndex = idxConfigChanges,
+                rawValueIndex = -1,
+                dataType = TYPE_INT_HEX,
+                dataValue = 0x000004A0, // orientation|screenSize|keyboardHidden
+                sortResourceId = ATTR_CONFIG_CHANGES
+            )
+        )
+        xmlChunks.write(buildStartElementChunk(line = 21, nameIdx = idxActivity, attrs = playerActivityAttrs))
+        xmlChunks.write(buildEndElementChunk(line = 21, nameIdx = idxActivity))
+
         // </application>
-        xmlChunks.write(buildEndElementChunk(line = 21, nameIdx = idxApplication))
+        xmlChunks.write(buildEndElementChunk(line = 22, nameIdx = idxApplication))
         // </manifest>
         xmlChunks.write(buildEndElementChunk(line = 22, nameIdx = idxManifest))
 
@@ -727,6 +761,7 @@ object BinaryManifestAndZipAligner {
         var appNameFound: String? = null
         var versionNameFound: String? = null
         var launcherActivityFound: String? = null
+        val activitiesFound = mutableListOf<String>()
         val permissionsFound = mutableListOf<String>()
         var areAttributesSortedByResId = true
 
@@ -806,8 +841,11 @@ object BinaryManifestAndZipAligner {
                                     ATTR_NAME -> {
                                         if (elemName == "uses-permission" && !strVal.isNullOrBlank()) {
                                             permissionsFound.add(strVal)
-                                        } else if (elemName == "activity" && !strVal.isNullOrBlank() && launcherActivityFound == null) {
-                                            launcherActivityFound = strVal
+                                        } else if (elemName == "activity" && !strVal.isNullOrBlank()) {
+                                            activitiesFound.add(strVal)
+                                            if (launcherActivityFound == null) {
+                                                launcherActivityFound = strVal
+                                            }
                                         }
                                     }
                                 }
@@ -829,6 +867,7 @@ object BinaryManifestAndZipAligner {
             versionNameFound = versionNameFound,
             compileSdkFound = compileSdk,
             launcherActivityFound = launcherActivityFound,
+            activitiesFound = activitiesFound,
             permissionsFound = permissionsFound,
             areAttributesSortedByResId = areAttributesSortedByResId
         )

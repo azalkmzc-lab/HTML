@@ -1,17 +1,22 @@
 package com.example.ui.screens
 
 import android.annotation.SuppressLint
+import android.os.Build
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,6 +32,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.IptvChannelEntity
 import com.example.data.StudioProjectEntity
 import com.example.ui.theme.*
+import org.json.JSONObject
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -39,6 +45,30 @@ fun LivePreviewTabScreen(
 ) {
     var reloadTrigger by remember { mutableIntStateOf(0) }
     var lastInterceptedEvent by remember { mutableStateOf("اضغط على أي قناة داخل المعاينة لتشغيلها عبر Media3 ExoPlayer 1.5.1") }
+    var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var jsBackStackDepth by remember { mutableIntStateOf(0) }
+    var currentJsViewLabel by remember { mutableStateOf("الصفحة الرئيسية") }
+
+    val triggerSmartBackInPreview = {
+        val wv = webViewRef
+        if (wv != null) {
+            wv.evaluateJavascript(
+                "(function(){ return (window.__handleStudioSmartBack && window.__handleStudioSmartBack()) ? 'HANDLED' : 'ROOT'; })()"
+            ) { result ->
+                if (result != null && result.contains("HANDLED")) {
+                    lastInterceptedEvent = "تم الرجوع خطوة للخلف داخل التطبيق مع حفظ موضع التمرير"
+                } else if (wv.canGoBack()) {
+                    wv.goBack()
+                    lastInterceptedEvent = "تم الرجوع للصفحة السابقة في سجل WebView"
+                }
+            }
+        }
+    }
+
+    // Intercept hardware Back when user is inside a sub-page/category/modal inside the preview WebView
+    BackHandler(enabled = jsBackStackDepth > 0 || (webViewRef?.canGoBack() == true)) {
+        triggerSmartBackInPreview()
+    }
 
     Column(
         modifier = Modifier
@@ -74,9 +104,26 @@ fun LivePreviewTabScreen(
                         style = MaterialTheme.typography.labelMedium,
                         color = EmeraldGreen
                     )
+                    if (jsBackStackDepth > 0) {
+                        Text(
+                            text = "سجل التنقل الذكي: عمق ($jsBackStackDepth) • $currentJsViewLabel",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AmberWarning
+                        )
+                    }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilledTonalIconButton(
+                        onClick = triggerSmartBackInPreview,
+                        modifier = Modifier.testTag("preview_smart_back_btn")
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "رجوع ذكي داخل التطبيق",
+                            tint = AmberWarning
+                        )
+                    }
                     FilledTonalIconButton(onClick = { reloadTrigger++ }) {
                         Icon(Icons.Default.Refresh, contentDescription = "إعادة تحميل المعاينة", tint = NeonCyan)
                     }
@@ -130,19 +177,89 @@ fun LivePreviewTabScreen(
                 AndroidView(
                     factory = { ctx ->
                         WebView(ctx).apply {
+                            webViewRef = this
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
+                            settings.databaseEnabled = true
+                            settings.allowFileAccess = true
+                            settings.allowContentAccess = true
+                            @Suppress("DEPRECATION")
+                            settings.allowFileAccessFromFileURLs = true
+                            @Suppress("DEPRECATION")
+                            settings.allowUniversalAccessFromFileURLs = true
                             settings.mediaPlaybackRequiresUserGesture = false
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                                try {
+                                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                } catch (_: Exception) {
+                                }
+                            }
 
-                            // Register Native Media3 Bridge so any click on a channel inside HTML
-                            // launches the Native Media3 ExoPlayer 1.5.1 directly instead of a WebView URL!
+                            // Register Native Media3 Bridge supporting JSON payload, full metadata,
+                            // legacy 3-arg calls, error diagnostics, and Smart Back stack tracking
                             addJavascriptInterface(
                                 object {
+                                    @JavascriptInterface
+                                    fun openNativePlayerJson(jsonPayload: String) {
+                                        post {
+                                            try {
+                                                val obj = JSONObject(jsonPayload)
+                                                val name = obj.optString("channelName", "قناة مباشرة")
+                                                val url = obj.optString("streamUrl", "")
+                                                val cat = obj.optString("categoryName", "بث مباشر")
+                                                val type = obj.optString("streamType", "HLS (M3U8)")
+                                                if (url.isNotBlank()) {
+                                                    lastInterceptedEvent = "تم استلام قناة ($name - $type) وتشغيلها عبر Media3"
+                                                    onTriggerNativeMedia3Player(name, url, cat)
+                                                } else {
+                                                    lastInterceptedEvent = "تنبيه: رابط البث غير متوفر للقناة ($name)"
+                                                }
+                                            } catch (_: Exception) {
+                                            }
+                                        }
+                                    }
+
+                                    @JavascriptInterface
+                                    fun openNativeExoPlayerFull(
+                                        channelId: String,
+                                        channelName: String,
+                                        channelLogo: String,
+                                        streamUrl: String,
+                                        streamType: String,
+                                        categoryName: String,
+                                        backupUrlsCsv: String
+                                    ) {
+                                        post {
+                                            if (streamUrl.isNotBlank()) {
+                                                lastInterceptedEvent = "تم تشغيل '$channelName' ($streamType) عبر Media3"
+                                                onTriggerNativeMedia3Player(channelName, streamUrl, categoryName)
+                                            } else {
+                                                lastInterceptedEvent = "تنبيه: رابط البث غير متوفر للقناة ($channelName)"
+                                            }
+                                        }
+                                    }
+
                                     @JavascriptInterface
                                     fun openNativeExoPlayer(title: String, streamUrl: String, category: String) {
                                         post {
                                             lastInterceptedEvent = "تم اعتراض رابط البث وتشغيله عبر Media3: $title"
                                             onTriggerNativeMedia3Player(title, streamUrl, category)
+                                        }
+                                    }
+
+                                    @JavascriptInterface
+                                    fun reportChannelError(channelName: String, reason: String) {
+                                        post {
+                                            lastInterceptedEvent = "تنبيه القناة ($channelName): $reason"
+                                        }
+                                    }
+
+                                    @JavascriptInterface
+                                    fun onNavigationStateChanged(stackDepth: Int, currentView: String) {
+                                        post {
+                                            jsBackStackDepth = stackDepth.coerceAtLeast(0)
+                                            currentJsViewLabel = currentView.ifBlank { "القسم الحالي" }
                                         }
                                     }
                                 },
@@ -159,7 +276,9 @@ fun LivePreviewTabScreen(
                                     if (url.contains(".m3u8", true) ||
                                         url.contains(".mpd", true) ||
                                         url.contains(".mp4", true) ||
-                                        url.contains(".ts", true)
+                                        url.contains(".ts", true) ||
+                                        url.startsWith("rtmp://", true) ||
+                                        url.startsWith("rtsp://", true)
                                     ) {
                                         lastInterceptedEvent = "تم تحويل رابط الفيديو مباشرة إلى Media3 ExoPlayer"
                                         onTriggerNativeMedia3Player("قناة مباشرة", url, "بث مباشر")
@@ -186,3 +305,4 @@ fun LivePreviewTabScreen(
         }
     }
 }
+

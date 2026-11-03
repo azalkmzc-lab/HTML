@@ -181,6 +181,28 @@ fun AiAnalyzerAndIptvScreen(
                 )
             }
 
+            // Firebase & Dynamic Cloud Data Detection Card
+            item {
+                val fb = analysisReport.firebaseSummary
+                AnalysisDetailSectionCard(
+                    title = "حالة الاتصال بـ Firebase والبيانات المباشرة",
+                    items = listOf(
+                        "اتصال Firebase" to if (fb.usesFirebase) "مكتشف ومحتفظ به بالكامل (100% Live Cloud) ✓" else "غير مستخدم في هذا الكود",
+                        "الخدمات المكتشفة" to buildList {
+                            if (fb.usesRealtimeDatabase) add("Realtime Database")
+                            if (fb.usesCloudFirestore) add("Cloud Firestore")
+                            if (fb.usesFirebaseAuth) add("Firebase Auth")
+                            if (fb.usesFirebaseStorage) add("Firebase Storage")
+                            if (isEmpty()) add("لا توجد خدمات Firebase")
+                        }.joinToString(" • "),
+                        "معرف المشروع (projectId)" to (fb.projectId ?: "غير محدد"),
+                        "رابط قاعدة البيانات (databaseURL)" to (fb.databaseUrl ?: "غير محدد"),
+                        "مسارات ومجموعات القنوات" to if (fb.detectedPathsAndCollections.isEmpty()) "تلقائي عند التشغيل" else fb.detectedPathsAndCollections.joinToString(" ، "),
+                        "دوال تشغيل القنوات الديناميكية" to if (fb.dynamicChannelFunctions.isEmpty()) "اعتراض ذكي شامل (Event Delegation + MutationObserver)" else fb.dynamicChannelFunctions.joinToString(" • ")
+                    )
+                )
+            }
+
             // Missing Files & Code Errors Section
             item {
                 Surface(
